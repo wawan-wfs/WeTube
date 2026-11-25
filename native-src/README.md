@@ -1,0 +1,3 @@
+# WeTube Desktop Native — by WFS Project
+
+Full native candidate source, restored from Stream Tube Desktop (MIT, copyright Avaneesh Inamdar). This checkpoint retains v0.8.0 package metadata until v0.9 release gates pass. It includes the Rust GPUI shell, libmpv integration, SQLite library, session and migration modules and native tab patches. Account login/cookie import and unsigned update are disabled. Windows build and actual playback not verified. Build from this directory: `cargo check --locked`, `cargo test --locked`, `cargo build --release --locked`. A reviewed compatible libmpv runtime and its notices are required before packaging or running media. No Tauri, WebView2 or Electron UI.

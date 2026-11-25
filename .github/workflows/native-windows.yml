@@ -1,0 +1,64 @@
+name: WeTube Native Windows gate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: wetube-native-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  source:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify committed source and export independently of build
+        run: python tools/verify_source.py WeTube-Desktop-Native-v09-checkpoint-source.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wetube-native-full-source
+          path: WeTube-Desktop-Native-v09-checkpoint-source.zip
+          if-no-files-found: error
+  windows:
+    needs: source
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: native-src
+    steps:
+      - shell: pwsh
+        working-directory: .
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify same commit before build
+        working-directory: .
+        run: python tools/verify_source.py verify-before-build.zip
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Show Rust version
+        run: rustc -Vv; cargo -V
+      - name: Cargo check locked
+        run: cargo check --locked
+      - name: Cargo test locked
+        run: cargo test --locked
+      - name: Cargo build locked release
+        run: cargo build --release --locked
+      - name: Hash executable
+        run: Get-FileHash target/release/wetube.exe -Algorithm SHA256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wetube-native-executable-no-runtime
+          path: native-src/target/release/wetube.exe
+          if-no-files-found: error

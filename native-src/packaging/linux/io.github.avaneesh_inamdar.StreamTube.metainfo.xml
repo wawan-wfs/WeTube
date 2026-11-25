@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.avaneesh_inamdar.StreamTube</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Stream Tube</name>
+  <summary>A fast native YouTube client without ads</summary>
+  <description>
+    <p>
+      Stream Tube is a native desktop YouTube client. It plays videos directly through
+      libmpv, so there are no ads, and it skips sponsor reads with SponsorBlock.
+    </p>
+    <ul>
+      <li>Home, Shorts, subscriptions, channels, playlists, search and live streams with chat</li>
+      <li>SponsorBlock, DeArrow titles and thumbnails, and Return YouTube Dislike</li>
+      <li>Background play, picture-in-picture, downloads and audio-only mode</li>
+      <li>Local subscriptions and history, or sign in to use your YouTube account</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">streamtube.desktop</launchable>
+  <url type="homepage">https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop</url>
+  <url type="bugtracker">https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/Avaneesh-Inamdar/Stream-Tube-Desktop/main/docs/screenshots/home.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/Avaneesh-Inamdar/Stream-Tube-Desktop/main/docs/screenshots/live.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.5.1-alpha" date="2026-11-23" type="development" />
+    <release version="0.5.0-alpha" date="2026-11-23" type="development" />
+    <release version="0.4.0-alpha" date="2026-11-23" type="development" />
+  </releases>
+</component>

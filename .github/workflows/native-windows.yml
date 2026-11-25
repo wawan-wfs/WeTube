@@ -1,6 +1,11 @@
 name: WeTube Native Windows gate
 on:
   workflow_dispatch:
+    inputs:
+      runtime_probe:
+        description: 'Probe pinned libmpv using local audio (no GUI, no installer)'
+        type: boolean
+        default: true
 permissions:
   contents: read
 concurrency:
@@ -18,6 +23,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Test runtime probe helpers
+        run: python -m unittest discover -s tools -p test_runtime_probe.py -v
       - name: Verify committed source and export independently of build
         run: python tools/verify_source.py WeTube-Desktop-Native-v09-checkpoint-source.zip
       - uses: actions/upload-artifact@v4
@@ -48,13 +55,22 @@ jobs:
         run: python tools/verify_source.py verify-before-build.zip
       - uses: dtolnay/rust-toolchain@stable
       - name: Show Rust version
-        run: rustc -Vv; cargo -V
+        run: |
+          New-Item -ItemType Directory -Force ../ci-evidence | Out-Null
+          rustc -Vv | Tee-Object ../ci-evidence/rustc.log
+          cargo -V | Tee-Object ../ci-evidence/cargo.log
       - name: Cargo check locked
-        run: cargo check --locked
+        run: |
+          cargo check --locked 2>&1 | Tee-Object ../ci-evidence/check.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Cargo test locked
-        run: cargo test --locked
+        run: |
+          cargo test --locked 2>&1 | Tee-Object ../ci-evidence/test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Cargo build locked release
-        run: cargo build --release --locked
+        run: |
+          cargo build --release --locked 2>&1 | Tee-Object ../ci-evidence/build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Hash executable
         run: Get-FileHash target/release/wetube.exe -Algorithm SHA256
       - uses: actions/upload-artifact@v4
@@ -62,3 +78,47 @@ jobs:
           name: wetube-native-executable-no-runtime
           path: native-src/target/release/wetube.exe
           if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wetube-native-build-evidence
+          path: ci-evidence/
+          if-no-files-found: warn
+  runtime:
+    needs: windows
+    if: inputs.runtime_probe
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      MPV_URL: https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-dev-x86_64-20261111-git-bcde6b93cc.7z
+      MPV_SHA256: 273c079b11ea5575822f972756f4c9a71149a5c10130353abeb8586738938452
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download and verify pinned runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force runtime-evidence, runtime-private | Out-Null
+          Invoke-WebRequest -Uri $env:MPV_URL -OutFile runtime-private/mpv.7z
+          $hash = (Get-FileHash runtime-private/mpv.7z -Algorithm SHA256).Hash.ToLower()
+          $hash | Set-Content runtime-evidence/archive-sha256.txt
+          if ($hash -ne $env:MPV_SHA256) { throw "libmpv archive hash mismatch" }
+          7z e -y runtime-private/mpv.7z libmpv-2.dll -oruntime-private
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path runtime-private/libmpv-2.dll -PathType Leaf)) { throw "libmpv DLL missing" }
+      - name: Offline libmpv probe
+        shell: pwsh
+        run: |
+          python tools/runtime_probe.py runtime-private/libmpv-2.dll 2>&1 | Tee-Object runtime-evidence/probe.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wetube-libmpv-probe-evidence
+          path: runtime-evidence/
+          if-no-files-found: warn

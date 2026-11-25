@@ -1,0 +1,3 @@
+# v0.9 CI preflight — not a release
+
+25 November 2026: GitHub Actions API returned zero runs for the materialized source checkpoint. Added a separate optional offline libmpv runtime probe following the locked Windows build, with the archive URL and SHA-256 copied from the pinned upstream workflow. Runtime files are not redistributed by the probe; missing Vulkan or DLL dependencies fail the gate instead of silently falling back. Build logs are retained on failures. Four local helper tests passed (synthetic PE headers and generated WAV); no Windows DLL, GPUI, media UI or installer test has run. No change to native-src and no release bump. Manual workflow dispatch is required; the connected GitHub actions do not expose dispatch.

@@ -1,15 +1,6 @@
 name: WeTube Native Windows gate
 on:
   workflow_dispatch:
-    inputs:
-      runtime_probe:
-        description: 'Probe pinned libmpv using local audio'
-        type: boolean
-        default: true
-      online_installer:
-        description: 'Build and test online installer, installed native renderer and uninstall'
-        type: boolean
-        default: true
 permissions:
   contents: read
 concurrency:
@@ -91,7 +82,6 @@ jobs:
           if-no-files-found: warn
   runtime:
     needs: windows
-    if: inputs.runtime_probe
     runs-on: windows-latest
     timeout-minutes: 15
     env:
@@ -129,7 +119,6 @@ jobs:
 
   installer:
     needs: [windows, runtime]
-    if: inputs.online_installer && inputs.runtime_probe
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -158,6 +147,22 @@ jobs:
       - name: Install and test the exact candidate
         shell: pwsh
         run: ./tools/test_installer.ps1
+      - name: Require complete offline acceptance evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reports = @('branding.json','renderer.json','motion.json','gui-startup.json','install.json','uninstall.json')
+          foreach ($name in $reports) {
+            $path = Join-Path installer-evidence $name
+            if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing required evidence: $name" }
+            $report = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            if ($report.status -ne 'PASS') { throw "Acceptance evidence not PASS: $name" }
+          }
+          $motion = Get-Content installer-evidence/motion.json -Raw | ConvertFrom-Json
+          if ($motion.distinct_frames -ne $true -or $motion.seek_confirmed -ne $true) { throw 'Motion/seek evidence incomplete' }
+          $uninstall = Get-Content installer-evidence/uninstall.json -Raw | ConvertFrom-Json
+          if ($uninstall.app_binaries_removed -ne $true) { throw 'Uninstall evidence incomplete' }
+          Write-Host 'Offline installer acceptance: all six reports PASS. Online playback and clean GPU acceptance are separate gates.'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -169,3 +174,26 @@ jobs:
           name: wetube-windows-x64-online-setup
           path: native-src/dist/*-setup.exe
           if-no-files-found: error
+
+  offline-acceptance:
+    name: Required offline acceptance
+    if: ${{ always() }}
+    needs: [source, windows, runtime, installer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SOURCE_RESULT: ${{ needs.source.result }}
+      WINDOWS_RESULT: ${{ needs.windows.result }}
+      RUNTIME_RESULT: ${{ needs.runtime.result }}
+      INSTALLER_RESULT: ${{ needs.installer.result }}
+    steps:
+      - name: Reject failed, skipped or cancelled mandatory jobs
+        shell: bash
+        run: |
+          set -eu
+          for gate in SOURCE_RESULT WINDOWS_RESULT RUNTIME_RESULT INSTALLER_RESULT; do
+            result="${!gate}"
+            printf '%s=%s\n' "$gate" "$result"
+            if [ "$result" != success ]; then exit 1; fi
+          done
+          echo "Offline CI PASS; real YouTube, clean Windows Vulkan, UI interaction and screenshots remain separate acceptance gates."

@@ -101,19 +101,25 @@ fn lib() -> Result<&'static (Library, Fns)> {
         }
         #[cfg(windows)]
         candidates.push(std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/third_party/mpv/libmpv-2.dll")));
-        candidates.push("libmpv-2.dll".into());
-        candidates.push("mpv-2.dll".into());
-        candidates.push("libmpv.so.2".into());
-        // older distributions (Ubuntu 22.04, Debian 11) ship the same API as .so.1
-        candidates.push("libmpv.so.1".into());
-        candidates.push("libmpv.so".into());
-        candidates.push("libmpv.2.dylib".into());
+        #[cfg(not(windows))]
+        {
+            candidates.push("libmpv.so.2".into());
+            candidates.push("libmpv.so.1".into());
+            candidates.push("libmpv.so".into());
+            candidates.push("libmpv.2.dylib".into());
+        }
         let mut last_err = String::from("libmpv not found");
         // the error from a copy that is there but won't load says more than
         // "not found" from the names tried after it
         let mut first_real_err: Option<String> = None;
         for c in candidates {
-            match Library::new(&c) {
+            #[cfg(windows)]
+            if !c.is_absolute() || !c.is_file() { continue; }
+            #[cfg(windows)]
+            let loaded = libloading::os::windows::Library::load_with_flags(&c, 0x1100).map(Library::from);
+            #[cfg(not(windows))]
+            let loaded = Library::new(&c);
+            match loaded {
                 Ok(l) => {
                     macro_rules! sym {
                         ($n:literal) => {
@@ -180,7 +186,7 @@ unsafe fn preload_vulkan_loader() {
     let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) else { return };
     for p in [dir.join("vulkan").join("vulkan-1.dll"), std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/third_party/vulkan/vulkan-1.dll"))] {
         if p.is_file() {
-            if let Ok(l) = unsafe { Library::new(&p) } {
+            if let Ok(l) = unsafe { libloading::os::windows::Library::load_with_flags(&p, 0x1100) } {
                 // stays loaded for the life of the process
                 std::mem::forget(l);
                 return;

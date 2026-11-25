@@ -912,8 +912,14 @@ impl SettingsPage {
     fn privacy(&self, cx: &mut Context<Self>) -> Div {
         let s = store::settings_snapshot();
         card(cx)
-            .child(row("Save watch history", "Kept on this computer, and in your YouTube history when connected in General", switch("he2", s.history_enabled, |s, v| s.history_enabled = v, cx), cx))
+            .child(row("Save watch history", "Kept locally on this computer; account sync is disabled", switch("he2", s.history_enabled, |s, v| s.history_enabled = v, cx), cx))
             .child(row("Save search history", "", switch("se", s.search_history_enabled, |s, v| s.search_history_enabled = v, cx), cx))
+            .child(row("Saved playback queue", "Saved only when you choose Save queue. Clear removes the local snapshot.", pill("wetube-clear-queue", Some("trash-2"), "Clear saved queue", cx).on_click(|_, window, cx| {
+                crate::ui::app::confirm("Clear saved queue?", "The saved snapshot will be removed. Current playback is unchanged.", "Clear", window, cx, |_, cx| {
+                    if crate::wetube_queue::clear() { toast(cx, "Saved queue cleared"); } else { toast(cx, "Could not clear saved queue"); }
+                    cx.refresh_windows();
+                });
+            }), cx))
             .child(row("Clear search history", "", pill("csh", Some("trash-2"), "Clear", cx).on_click(|_, _, cx| {
                 store::search_history_clear();
                 toast(cx, "Search history cleared");

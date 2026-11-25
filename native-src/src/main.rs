@@ -15,6 +15,8 @@ mod ui;
 mod updater;
 mod wetube_session;
 mod wetube_migration;
+mod wetube_links;
+mod wetube_queue;
 
 use gpui_kit::*;
 

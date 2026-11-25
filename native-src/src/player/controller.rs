@@ -476,6 +476,8 @@ impl Player {
 
     /// Starts playing a video. Fetches streams, SponsorBlock segments and resumes progress.
     pub fn play(&mut self, video: VideoItem, start: Option<f64>, cx: &mut Context<Self>) {
+        if !crate::wetube_session::valid_id(&video.id) { toast(cx, "Invalid video ID"); return; }
+        let start = start.filter(|t| t.is_finite() && (0.0..=604800.0).contains(t));
         self.save_progress(true);
         if let Some(prev) = &self.video {
             crate::api::web::report_stop(&prev.id, self.time);
@@ -942,6 +944,7 @@ impl Player {
     }
 
     pub fn seek_to(&mut self, t: f64) {
+        if !t.is_finite() { return; }
         let t = if self.duration > 0.0 { t.clamp(0.0, self.duration - 0.1) } else { t.max(0.0) };
         self.time = t;
         if let Some(m) = &self.mpv {

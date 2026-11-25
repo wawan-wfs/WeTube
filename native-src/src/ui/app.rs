@@ -63,22 +63,20 @@ impl Global for AppHandle {}
 
 /// The page a YouTube (or `streamtube:`) link opens, if it's one we understand.
 pub fn route_from_link(arg: &str) -> Option<Route> {
+    if arg.len() > 8192 { return None; }
     let arg = crate::links::normalize(arg);
-    let search_arg = arg
-        .contains("/results?")
-        .then(|| arg.split(['?', '&']).find_map(|kv| kv.strip_prefix("search_query=")))
-        .flatten()
-        .map(|q| crate::api::http::urldecode(&q.replace('+', " ")))
-        .filter(|q| !q.trim().is_empty());
-    let param = |key: &str| {
-        arg.split(['?', '&', '#']).skip(1).find_map(|kv| kv.strip_prefix(key).and_then(|v| v.strip_prefix('='))).map(str::to_string)
-    };
+    let (host, path, query) = crate::wetube_links::split(&arg)?;
+    let search_arg = (path == "/results" && !host.eq_ignore_ascii_case("youtu.be"))
+        .then(|| crate::wetube_links::param(query, "search_query"))
+        .flatten().map(|q| crate::api::http::urldecode(&q.replace('+', " ")))
+        .filter(|q| !q.trim().is_empty() && q.len() <= 512 && !q.chars().any(char::is_control));
+    let param = |key: &str| crate::wetube_links::param(query, key).map(str::to_string);
     search_arg.map(Route::Search).or_else(|| {
         innertube::parse_youtube_url(&arg).map(|r| match r {
             // a shared position (t=90, t=1m30s) and the playlist it's played from
             innertube::ResolvedUrl::Video(id) => Route::Watch {
                 id,
-                playlist: param("list").filter(|l| !l.is_empty()),
+                playlist: param("list").filter(|l| crate::wetube_links::identifier(l)),
                 start: param("t").or_else(|| param("start")).and_then(|t| parse_link_time(&t)).filter(|t| *t > 0.0),
             },
             innertube::ResolvedUrl::Channel(id) => Route::Channel(id),
@@ -90,7 +88,7 @@ pub fn route_from_link(arg: &str) -> Option<Route> {
 /// "90", "90s", "1m30s" or "1h2m3s" in seconds.
 fn parse_link_time(t: &str) -> Option<f64> {
     if let Ok(s) = t.trim_end_matches('s').parse::<f64>() {
-        return Some(s);
+        return (s.is_finite() && (0.0..=604800.0).contains(&s)).then_some(s);
     }
     let (mut total, mut num) = (0.0, String::new());
     for c in t.chars() {
@@ -107,7 +105,7 @@ fn parse_link_time(t: &str) -> Option<f64> {
             };
         }
     }
-    (num.is_empty()).then_some(total)
+    (num.is_empty() && !t.is_empty() && total.is_finite() && (0.0..=604800.0).contains(&total)).then_some(total)
 }
 
 #[cfg(test)]
@@ -124,6 +122,9 @@ mod link_tests {
         assert!(matches!(r, Some(Route::Watch { start: None, playlist: None, .. })), "{r:?}");
         assert_eq!(parse_link_time("1h2m3s"), Some(3723.0));
         assert_eq!(parse_link_time("abc"), None);
+        for bad in ["NaN", "inf", "-1", "9999999999", ""] { assert_eq!(parse_link_time(bad), None); }
+        assert!(route_from_link("https://evil.test/results?search_query=hello").is_none());
+        assert!(route_from_link("streamtube://open?url=https%3A%2F%2Fevil.test%2Fwatch%3Fv%3Dabcdefghijk").is_none());
     }
 }
 
@@ -411,6 +412,7 @@ pub struct AppView {
     wetube_closed: Vec<Route>,
     wetube_tabs_dirty: bool,
     wetube_tabs_enabled: bool,
+    wetube_session_retry: std::time::Instant,
     next_tab_id: u64,
     pub route: Route,
     /// space is down: released quickly it toggles pause, held it plays at 2x
@@ -618,6 +620,7 @@ impl AppView {
             wetube_closed: Vec::new(),
             wetube_tabs_dirty: true,
             wetube_tabs_enabled: false,
+            wetube_session_retry: std::time::Instant::now(),
             next_tab_id,
             route: start,
             page,
@@ -1101,13 +1104,13 @@ impl AppView {
         cx.notify();
     }
 
-    fn wetube_save_tabs(&self) {
-        if !store::settings_snapshot().wetube_restore_tabs { return; }
+    fn wetube_save_tabs(&self) -> bool {
+        if !store::settings_snapshot().wetube_restore_tabs { return crate::wetube_session::clear(); }
         let ids = self.tabs.iter().enumerate().filter_map(|(i, tab)| {
             let route = if i == self.active_tab { &self.route } else { &tab.route };
             match route { Route::Watch { id, .. } => Some(id.clone()), _ => None }
         });
-        crate::wetube_session::save(ids);
+        crate::wetube_session::save(ids)
     }
 
     fn wetube_reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3035,8 +3038,9 @@ impl Render for AppView {
             self.wetube_tabs_enabled = restore;
             self.wetube_tabs_dirty = true;
         }
-        if std::mem::take(&mut self.wetube_tabs_dirty) && restore {
-            self.wetube_save_tabs();
+        if self.wetube_tabs_dirty && std::time::Instant::now() >= self.wetube_session_retry {
+            self.wetube_tabs_dirty = !self.wetube_save_tabs();
+            if self.wetube_tabs_dirty { self.wetube_session_retry = std::time::Instant::now() + std::time::Duration::from_secs(2); }
         }
         let p = pal(cx);
         let scale = store::settings_snapshot().ui_scale.clamp(0.75, 1.5);

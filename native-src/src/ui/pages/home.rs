@@ -407,6 +407,9 @@ impl Render for HomePage {
             .size_full()
             .flex()
             .flex_col()
+            .child(div().flex().flex_col().gap_1().px_6().pt_4().pb_1()
+                .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child("Discover"))
+                .child(div().text_sm().text_color(p.text2).child("Browse videos, channels and your local subscriptions")))
             .child(chips.overflow_hidden())
             .child(page_scroll("home-scroll", &self.scroll).child(div().px_6().pt_2().pb_24().child(body)))
     }

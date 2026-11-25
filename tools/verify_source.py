@@ -14,6 +14,7 @@ UPSTREAM = "9904212b3323512eb009d77322ecf999dcdc92fc"
 REV = "f377d0685458ff542f22e7cc98c110a4275b19de"
 REQUIRED = {"Cargo.toml", "Cargo.lock", "LICENSE", "src/main.rs", "src/wetube_session.rs",
             "src/wetube_migration.rs", "src/wetube_import_schema.sql", "src/ui/app.rs",
+            "src/wetube_links.rs", "src/wetube_queue.rs",
             "src/player/mpv.rs", "src/store.rs", "vendor/gpui-pre-windows/Cargo.toml",
             "installer/wetube.iss", "WETUBE_BUILD.json", "assets/streamtube.ico"}
 MAX_BYTES = 100_000_000
@@ -76,9 +77,11 @@ def audit(up, native):
             continue
         if name not in native or (native[name] != sha and not mutable(name)):
             raise ValueError("Missing or unauthorized upstream change: " + name)
-    for name in ("src/wetube_migration.rs", "src/wetube_session.rs", "src/wetube_import_schema.sql"):
+    for name in ("src/wetube_migration.rs", "src/wetube_session.rs", "src/wetube_import_schema.sql", "src/wetube_links.rs", "src/wetube_queue.rs"):
         expected = {"src/wetube_migration.rs":"081f2e759c07ee1cd342769cb7a13da2c9335183",
-                    "src/wetube_session.rs":"1ef42ad4109a11ed181718f1176ed21418d375e5",
+                    "src/wetube_session.rs":"9497835e0a5c1e7dae8ba19afc7c52c39684cd28",
+                    "src/wetube_links.rs":"ea285f009bc2b27f6c971afdb1fb52dfd756b4cd",
+                    "src/wetube_queue.rs":"1e9344db18e540c933e997fa87651f263b4a47a7",
                     "src/wetube_import_schema.sql":"58dbd39626f1296829b7a197fc07d929e616e37d"}[name]
         if native[name] != expected:
             raise ValueError("Baseline module bytes changed: " + name)

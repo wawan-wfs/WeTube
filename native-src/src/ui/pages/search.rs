@@ -235,7 +235,10 @@ impl Render for SearchPage {
                 .px_6()
                 .pt_4()
                 .pb_24()
-                .child(div().w(width).flex().flex_col().child(header).children(filters).child(body)),
+                .child(div().w(width).flex().flex_col().gap_3()
+                    .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child("Search results"))
+                    .child(div().text_sm().text_color(p.text2).child(self.query.clone()))
+                    .child(header).children(filters).child(body)),
         )
     }
 }

@@ -23,17 +23,22 @@ pub fn load() -> Vec<String> {
     if !crate::store::settings_snapshot().wetube_restore_tabs { return Vec::new(); }
     crate::store::kv_get(KEY).map(|s| decode(&s)).unwrap_or_default()
 }
-pub fn save(ids: impl IntoIterator<Item = String>) {
-    if !crate::store::settings_snapshot().wetube_restore_tabs { return; }
-    if let Ok(s) = serde_json::to_string(&VideoTabs { ids: clean(ids) }) {
-        if let Ok(mut last) = LAST.lock() {
-            if last.as_deref() != Some(s.as_str()) {
-                if crate::store::wetube_kv_set(KEY, &s) { *last = Some(s); }
-            }
-        }
-    }
+pub fn save(ids: impl IntoIterator<Item = String>) -> bool {
+    if !crate::store::settings_snapshot().wetube_restore_tabs { return clear(); }
+    let Ok(s) = serde_json::to_string(&VideoTabs { ids: clean(ids) }) else { return false };
+    let Ok(mut last) = LAST.lock() else { return false };
+    if last.as_deref() == Some(s.as_str()) { return true; }
+    if !crate::store::wetube_kv_set(KEY, &s) { return false; }
+    *last = Some(s);
+    true
 }
-pub fn clear() { if let Ok(mut last) = LAST.lock() { let _ = crate::store::wetube_kv_set(KEY, ""); *last = None; } }
+pub fn clear() -> bool {
+    let Ok(mut last) = LAST.lock() else { return false };
+    if last.as_deref() == Some("") { return true; }
+    if !crate::store::wetube_kv_set(KEY, "") { return false; }
+    *last = Some(String::new());
+    true
+}
 
 #[cfg(test)]
 mod tests {

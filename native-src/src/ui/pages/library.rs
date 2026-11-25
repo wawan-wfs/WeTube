@@ -295,13 +295,16 @@ impl Render for HistoryPage {
 
 pub struct LibraryPage {
     scroll: ScrollHandle,
+    filter: Entity<InputState>,
     /// the signed-in account's YouTube playlists
     yt: Option<Load<Vec<crate::api::types::PlaylistItem>>>,
 }
 
 impl LibraryPage {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut s = Self { scroll: ScrollHandle::new(), yt: None };
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter local playlists"));
+        cx.observe(&filter, |_, _, cx| cx.notify()).detach();
+        let mut s = Self { scroll: ScrollHandle::new(), filter, yt: None };
         if crate::api::auth::signed_in() {
             s.yt = Some(Load::Loading);
             cx.spawn(async move |this, cx| {
@@ -326,8 +329,11 @@ impl Render for LibraryPage {
         let width = content_width(cx);
         let (_, w) = grid_columns(width, 260.0);
         let pls = store::playlists();
+        let q = self.filter.read(cx).value().trim().to_lowercase();
+        let count = pls.iter().filter(|pl| pl.name.to_lowercase().contains(&q)).count();
+        let total_videos: usize = pls.iter().map(|pl| pl.count as usize).sum();
         let mut cards: Vec<AnyElement> = pls
-            .iter()
+            .iter().filter(|pl| pl.name.to_lowercase().contains(&q))
             .map(|pl| {
                 let id = pl.id;
                 div()
@@ -388,6 +394,22 @@ impl Render for LibraryPage {
                 .px_6()
                 .pt_6()
                 .pb_24()
+                .child(div().flex().flex_col().gap_3().p_5().rounded_xl().bg(p.surface).border_1().border_color(p.border)
+                    .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child("Your library"))
+                    .child(div().text_sm().text_color(p.text2).child(format!("{} local playlists · {} saved entries · on this device", pls.len(), total_videos)))
+                    .child(div().flex().items_center().gap_2().child(icon("search").size_4().text_color(p.text2)).child(Input::new(&self.filter).appearance(false).cleanable(true)))
+                    .child(div().text_xs().text_color(p.text2).child(format!("Showing {count} of {} playlists", pls.len())))
+                    .child(div().flex().items_center().gap_2().child(pill("wetube-restore-queue", Some("list-video"), "Play saved queue", cx).on_click(|_, window, cx| {
+                        match crate::wetube_queue::load() {
+                            Ok(Some((videos, selected))) => {
+                                let id = videos[selected].id.clone();
+                                crate::player::controller::player(cx).update(cx, |p, cx| { p.queue = videos; p.play_queue_index(selected, cx); });
+                                navigate(Route::Watch { id, playlist: None, start: None }, window, cx);
+                            }
+                            Ok(None) => toast(cx, "No saved queue. Save one from the watch page."),
+                            Err(e) => toast(cx, e.to_string()),
+                        }
+                    })).child(div().text_xs().text_color(p.text2).child("Restore explicitly; never starts on launch"))))
                 .when(!history.is_empty(), |d| {
                     d.child(
                         div()

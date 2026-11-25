@@ -698,41 +698,22 @@ pub enum ResolvedUrl {
 
 /// Fast local parse of common URL shapes before falling back to resolve_url.
 pub fn parse_youtube_url(input: &str) -> Option<ResolvedUrl> {
-    let s = input.trim();
-    let is_id = |x: &str| x.len() == 11 && x.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if !s.contains("youtu") {
-        return None;
-    }
-    let get_param = |name: &str| -> Option<String> {
-        let q = s.split_once('?')?.1;
-        q.split('&').find_map(|kv| {
-            let (k, v) = kv.split_once('=')?;
-            (k == name).then(|| v.split('#').next().unwrap_or(v).to_string())
-        })
-    };
-    if let Some(rest) = s.split("youtu.be/").nth(1) {
-        let id: String = rest.chars().take(11).collect();
-        if is_id(&id) {
-            return Some(ResolvedUrl::Video(id));
-        }
-    }
+    let (host, path, query) = crate::wetube_links::split(input)?;
+    let video = |id: &str| crate::wetube_session::valid_id(id).then(|| ResolvedUrl::Video(id.to_string()));
+    if host.eq_ignore_ascii_case("youtu.be") { return video(path.strip_prefix('/')?); }
     for marker in ["/shorts/", "/live/", "/embed/"] {
-        if let Some(rest) = s.split(marker).nth(1) {
-            let id: String = rest.chars().take(11).collect();
-            if is_id(&id) {
-                return Some(ResolvedUrl::Video(id));
-            }
-        }
+        if let Some(id) = path.strip_prefix(marker) { return video(id); }
     }
-    if let Some(v) = get_param("v").filter(|v| is_id(v)) {
-        return Some(ResolvedUrl::Video(v));
+    if path == "/watch" {
+        if let Some(id) = crate::wetube_links::param(query, "v") { return video(id); }
+        if query.split('&').any(|kv| kv.starts_with("v=")) { return None; }
     }
-    if let Some(l) = get_param("list") {
-        return Some(ResolvedUrl::Playlist(l));
+    if matches!(path, "/playlist" | "/watch") {
+        return crate::wetube_links::param(query, "list").filter(|s| crate::wetube_links::identifier(s)).map(|s| ResolvedUrl::Playlist(s.to_string()));
     }
-    if let Some(rest) = s.split("/channel/").nth(1) {
-        let id: String = rest.chars().take_while(|c| *c != '/' && *c != '?').collect();
-        return Some(ResolvedUrl::Channel(id));
+    if let Some(id) = path.strip_prefix("/channel/") {
+        let id = id.split('/').next()?;
+        if id.starts_with("UC") && id.len() == 24 && crate::wetube_links::identifier(id) { return Some(ResolvedUrl::Channel(id.to_string())); }
     }
     None
 }
@@ -1312,6 +1293,11 @@ mod tests {
         assert_eq!(f.encode().unwrap(), "EgIQAQ==");
         let f = SearchFilter { sort: 2, ..Default::default() };
         assert_eq!(f.encode().unwrap(), "CAI=");
+    }
+
+    #[test]
+    fn url_parse_rejects_untrusted_routes() {
+        for bad in ["https://evil.test/youtu.be/abcdefghijk", "https://youtube.com.evil.test/watch?v=abcdefghijk", "https://youtu.be/abcdefghijkEXTRA", "https://www.youtube.com/watch?v=abcdefghijk&v=12345678901", "https://www.youtube.com/playlist?list=a/b"] { assert!(parse_youtube_url(bad).is_none(), "{bad}"); }
     }
 
     #[test]

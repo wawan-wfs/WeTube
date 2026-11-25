@@ -1272,7 +1272,7 @@ impl WatchPage {
             let r = pl.read(cx);
             (r.queue.clone(), r.queue_pos)
         };
-        if queue.len() < 2 {
+        if queue.is_empty() {
             return None;
         }
         let title = self
@@ -1284,22 +1284,29 @@ impl WatchPage {
         let mut list = div().id("queue-list").flex().flex_col().max_h(px(400.)).overflow_y_scroll();
         for (i, v) in queue.iter().enumerate() {
             let plc = pl.clone();
+            let up = pl.clone();
+            let down = pl.clone();
+            let remove = pl.clone();
             list = list.child(
                 div()
                     .flex()
                     .items_center()
                     .gap_1()
                     .child(div().w_5().text_xs().text_color(p.text2).text_center().child(if pos == Some(i) { "▶".to_string() } else { (i + 1).to_string() }))
-                    .child(compact_row(
+                    .child(div().flex_1().min_w_0().child(compact_row(
                         v,
                         pos == Some(i),
                         Some(Arc::new(move |_, cx: &mut App| plc.update(cx, |p, cx| p.play_queue_index(i, cx)))),
                         cx,
-                    )),
+                    )))
+                    .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{i}")), None, "↑", cx).on_click(move |_, _, cx| up.update(cx, |p, cx| { crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, true); cx.notify(); }))))
+                    .when(i + 1 < queue.len(), |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, false); cx.notify(); }))))
+                    .when(pos != Some(i), |d| d.child(icon_button(SharedString::from(format!("queue-remove-{i}")), "x", cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { crate::wetube_queue::remove_item(&mut p.queue, &mut p.queue_pos, i); cx.notify(); })))),
             );
         }
         let plc2 = pl.clone();
         let plc3 = pl.clone();
+        let save = pl.clone();
         Some(
             div()
                 .flex()
@@ -1329,11 +1336,10 @@ impl WatchPage {
                                 .child(icon_button("q-shuffle", "shuffle", cx).on_click(move |_, _, cx| {
                                     plc2.update(cx, |p, cx| {
                                         use rand::seq::SliceRandom;
-                                        let cur = p.queue_pos.and_then(|i| p.queue.get(i).cloned());
-                                        p.queue.shuffle(&mut rand::rng());
-                                        if let Some(c) = cur {
-                                            p.queue_pos = p.queue.iter().position(|v| v.id == c.id);
-                                        }
+                                        let mut indexed: Vec<_> = std::mem::take(&mut p.queue).into_iter().enumerate().collect();
+                                        indexed.shuffle(&mut rand::rng());
+                                        p.queue_pos = p.queue_pos.and_then(|old| indexed.iter().position(|(i, _)| *i == old));
+                                        p.queue = indexed.into_iter().map(|(_, v)| v).collect();
                                         cx.notify();
                                     })
                                 }))
@@ -1346,6 +1352,12 @@ impl WatchPage {
                                 })),
                         ),
                 )
+                .child(div().flex().items_center().justify_between().px_3().py_2().border_b_1().border_color(p.border)
+                    .child(div().text_xs().text_color(p.text2).child("↑ ↓ reorder · × remove"))
+                    .child(pill("wetube-save-queue", Some("list-video"), "Save queue", cx).on_click(move |_, _, cx| {
+                        let result = { let p = save.read(cx); crate::wetube_queue::save(&p.queue, p.queue_pos) };
+                        match result { Ok(()) => toast(cx, "Queue saved locally"), Err(e) => toast(cx, e.to_string()) }
+                    })))
                 .child(nested_scroll("queue-wrap", list))
                 .into_any_element(),
         )

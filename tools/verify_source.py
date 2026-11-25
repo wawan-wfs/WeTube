@@ -14,7 +14,7 @@ UPSTREAM = "9904212b3323512eb009d77322ecf999dcdc92fc"
 REV = "f377d0685458ff542f22e7cc98c110a4275b19de"
 REQUIRED = {"Cargo.toml", "Cargo.lock", "LICENSE", "src/main.rs", "src/wetube_session.rs",
             "src/wetube_migration.rs", "src/wetube_import_schema.sql", "src/ui/app.rs",
-            "src/wetube_links.rs", "src/wetube_queue.rs",
+            "src/wetube_links.rs", "src/wetube_queue.rs", "src/wetube_runtime.rs", "installer/runtime-notice.txt",
             "src/player/mpv.rs", "src/store.rs", "vendor/gpui-pre-windows/Cargo.toml",
             "installer/wetube.iss", "WETUBE_BUILD.json", "assets/streamtube.ico"}
 MAX_BYTES = 100_000_000
@@ -65,7 +65,7 @@ def read_verified(prefix, rows):
     return result
 
 def mutable(name):
-    return name in {"Cargo.toml", "Cargo.lock", "README.md", "assets/logo.svg", "assets/logo.png", "assets/streamtube.ico"} or (name.startswith("src/") and name.endswith(".rs")) or name.startswith("assets/accent/")
+    return name in {"Cargo.toml", "Cargo.lock", "README.md", "assets/logo.svg", "assets/logo.png", "assets/streamtube.ico", "installer/wetube.iss"} or (name.startswith("src/") and name.endswith(".rs")) or name.startswith("assets/accent/")
 
 def audit(up, native):
     if len(up) != 120 or not REQUIRED <= native.keys():

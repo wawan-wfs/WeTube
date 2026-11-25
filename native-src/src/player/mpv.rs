@@ -80,8 +80,12 @@ struct Fns {
 }
 
 fn lib() -> Result<&'static (Library, Fns)> {
-    static LIB: std::sync::OnceLock<Result<(Library, Fns), String>> = std::sync::OnceLock::new();
-    LIB.get_or_init(|| unsafe {
+    static LIB: std::sync::OnceLock<(Library, Fns)> = std::sync::OnceLock::new();
+    static LOAD: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    if let Some(lib) = LIB.get() { return Ok(lib); }
+    let _guard = LOAD.lock();
+    if let Some(lib) = LIB.get() { return Ok(lib); }
+    let result = (|| -> std::result::Result<(Library, Fns), String> { unsafe {
         #[cfg(windows)]
         preload_vulkan_loader();
         let mut candidates: Vec<std::path::PathBuf> = Vec::new();
@@ -99,7 +103,7 @@ fn lib() -> Result<&'static (Library, Fns)> {
                 }
             }
         }
-        #[cfg(windows)]
+        #[cfg(all(windows, debug_assertions))]
         candidates.push(std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/third_party/mpv/libmpv-2.dll")));
         #[cfg(not(windows))]
         {
@@ -108,6 +112,9 @@ fn lib() -> Result<&'static (Library, Fns)> {
             candidates.push("libmpv.so".into());
             candidates.push("libmpv.2.dylib".into());
         }
+        #[cfg(windows)]
+        let mut last_err = String::from("Missing libmpv-2.dll beside wetube.exe. Install using WeTube Windows Setup (runtime included by download), then Retry.");
+        #[cfg(not(windows))]
         let mut last_err = String::from("libmpv not found");
         // the error from a copy that is there but won't load says more than
         // "not found" from the names tried after it
@@ -158,9 +165,9 @@ fn lib() -> Result<&'static (Library, Fns)> {
             }
         }
         Err(first_real_err.unwrap_or(last_err))
-    })
-    .as_ref()
-    .map_err(|e| anyhow!("{e}"))
+    } })().map_err(|e| anyhow!("{e}"))?;
+    let _ = LIB.set(result);
+    LIB.get().ok_or_else(|| anyhow!("libmpv initialization state unavailable"))
 }
 
 /// libmpv-2.dll links against vulkan-1.dll, which Windows only has when the GPU
@@ -171,24 +178,27 @@ fn lib() -> Result<&'static (Library, Fns)> {
 /// Windows uses it to satisfy libmpv's import.
 #[cfg(windows)]
 unsafe fn preload_vulkan_loader() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static DONE: AtomicBool = AtomicBool::new(false);
-    if DONE.swap(true, Ordering::SeqCst) {
-        return;
-    }
+    static DONE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if DONE.get().is_some() { return; }
     // system copy (System32), never one from the current directory
     let sys = std::env::var_os("SystemRoot")
         .map(|r| std::path::PathBuf::from(r).join("System32").join("vulkan-1.dll"))
         .filter(|p| p.is_file());
-    if sys.is_some() {
-        return;
+    if let Some(sys) = sys {
+        if let Ok(l) = unsafe { libloading::os::windows::Library::load_with_flags(&sys, 0x0800) } {
+            std::mem::forget(l);
+            let _ = DONE.set(());
+            return;
+        }
     }
     let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) else { return };
-    for p in [dir.join("vulkan").join("vulkan-1.dll"), std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/third_party/vulkan/vulkan-1.dll"))] {
+    let candidates = [dir.join("vulkan").join("vulkan-1.dll")];
+    for p in candidates {
         if p.is_file() {
             if let Ok(l) = unsafe { libloading::os::windows::Library::load_with_flags(&p, 0x1100) } {
                 // stays loaded for the life of the process
                 std::mem::forget(l);
+                let _ = DONE.set(());
                 return;
             }
         }
@@ -291,6 +301,7 @@ impl Mpv {
             }
             let rc = (f.initialize)(h);
             if rc < 0 {
+                (f.terminate_destroy)(h);
                 return Err(anyhow!("mpv_initialize failed: {}", err_str(rc)));
             }
             for (i, (name, fmt)) in OBSERVED.iter().enumerate() {

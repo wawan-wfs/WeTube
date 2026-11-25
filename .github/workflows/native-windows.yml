@@ -3,7 +3,11 @@ on:
   workflow_dispatch:
     inputs:
       runtime_probe:
-        description: 'Probe pinned libmpv using local audio (no GUI, no installer)'
+        description: 'Probe pinned libmpv using local audio'
+        type: boolean
+        default: true
+      online_installer:
+        description: 'Build and test online installer, installed native renderer and uninstall'
         type: boolean
         default: true
 permissions:
@@ -122,3 +126,43 @@ jobs:
           name: wetube-libmpv-probe-evidence
           path: runtime-evidence/
           if-no-files-found: warn
+
+  installer:
+    needs: [windows, runtime]
+    if: inputs.online_installer && inputs.runtime_probe
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: wetube-native-executable-no-runtime
+          path: native-src/target/release
+      - name: Compile online installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (!(Test-Path $iscc)) { throw 'Inno Setup 6 compiler missing' }
+          & $iscc native-src/installer/wetube.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install and test the exact candidate
+        shell: pwsh
+        run: ./tools/test_installer.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wetube-installer-test-evidence
+          path: installer-evidence/
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wetube-windows-x64-online-setup
+          path: native-src/dist/*-setup.exe
+          if-no-files-found: error

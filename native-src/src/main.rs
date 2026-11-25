@@ -17,6 +17,7 @@ mod wetube_session;
 mod wetube_migration;
 mod wetube_links;
 mod wetube_queue;
+mod wetube_runtime;
 
 use gpui_kit::*;
 
@@ -59,6 +60,9 @@ pub fn save_window_bounds(window: &Window) {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--runtime-self-test") {
+        std::process::exit(wetube_runtime::run_cli());
+    }
     perf::mark("main");
     // the local stream proxy must never be reached through the user's proxy
     // SAFETY: set before any other thread starts

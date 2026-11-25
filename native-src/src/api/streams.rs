@@ -619,7 +619,7 @@ pub fn hide_window(cmd: &mut Command) {
 pub fn ytdlp_streams(video_id: &str) -> Result<StreamInfo> {
     let bin = ytdlp_path().ok_or_else(|| anyhow!("yt-dlp not found (install it or set its path in Settings)"))?;
     let mut cmd = Command::new(bin);
-    cmd.args(["-J", "--no-warnings", "--no-playlist"]);
+    cmd.args(["--ignore-config", "-J", "--no-warnings", "--no-playlist"]);
     if let Some(p) = crate::store::proxy_setting() {
         cmd.arg("--proxy").arg(p);
     }
@@ -641,7 +641,7 @@ pub fn ytdlp_streams(video_id: &str) -> Result<StreamInfo> {
         }
     }
     if !out.status.success() {
-        return Err(anyhow!("{}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("yt-dlp failed")));
+        return Err(anyhow!("{}", crate::downloads::ytdlp_failure(out.status.code(), &String::from_utf8_lossy(&out.stderr))));
     }
     let v: Value = serde_json::from_slice(&out.stdout)?;
     let mut info = StreamInfo {

@@ -316,6 +316,7 @@ pub fn retry_with_ios(err: &str) -> bool {
 fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::Settings, extra: &[&str], name: Option<&str>, cancel: &AtomicBool, progress: &dyn Fn(f32, &str)) -> anyhow::Result<String> {
     {
         let mut cmd = Command::new(bin);
+        cmd.arg("--ignore-config");
         cmd.args(extra);
         if let Some(p) = crate::store::proxy_setting() {
             cmd.arg("--proxy").arg(p);
@@ -382,13 +383,45 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
         let status = child.wait()?;
         let err = err_reader.join().unwrap_or_default();
         if !status.success() {
-            let last = err.lines().rev().find(|l| l.contains("ERROR")).or(err.lines().last()).unwrap_or("yt-dlp failed").to_string();
-            if last.contains("confirm you") && last.contains("bot") {
-                anyhow::bail!("YouTube asked for a bot check. Turn on \"Use IPv4 only\" in Settings → Network, or update yt-dlp.");
-            }
-            anyhow::bail!("{}", last.trim_start_matches("ERROR: ").trim());
+            anyhow::bail!("{}", ytdlp_failure(status.code(), &err));
         }
         Ok(if final_path.is_empty() { dir.to_string_lossy().into_owned() } else { final_path })
+    }
+}
+
+/// Stable, privacy-safe error categories; never persist raw stderr (it can contain URLs or tokens).
+pub(crate) fn ytdlp_failure(code: Option<i32>, stderr: &str) -> String {
+    let e = stderr.to_ascii_lowercase();
+    let cause = if e.contains("confirm you") && e.contains("bot") {
+        "Provider requested verification. Open the official YouTube website."
+    } else if e.contains("private video") || e.contains("sign in") || e.contains("age-restricted") || e.contains("copyright") || e.contains("members-only") {
+        "Media unavailable or requires authorization. Check access on the official site."
+    } else if e.contains("ffmpeg") || e.contains("ffprobe") {
+        "FFmpeg/ffprobe missing or failed. Check media tools in Settings."
+    } else if e.contains("requested format") || e.contains("no video formats") {
+        "Requested format unavailable. Choose an available format."
+    } else if e.contains("403") || e.contains("429") {
+        "Provider refused or rate-limited the request. Do not retry repeatedly."
+    } else if e.contains("timed out") || e.contains("connection") || e.contains("certificate") || e.contains("network") {
+        "Network or TLS failure. Check connection and proxy settings."
+    } else if e.contains("permission denied") || e.contains("access is denied") || e.contains("no space") {
+        "Cannot write output. Check folder permission and free space."
+    } else if stderr.trim().is_empty() {
+        "Tool returned no error details. Check the yt-dlp executable and version in Settings."
+    } else {
+        "Tool reported an unclassified error. Check the configured yt-dlp version and media availability."
+    };
+    format!("yt-dlp exit {}: {cause}", code.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into()))
+}
+#[cfg(test)]
+mod wetube_diagnostics_tests {
+    #[test]
+    fn failure_redacts_sensitive_text() {
+        let m = super::ytdlp_failure(Some(1), "ERROR: https://example.org/?token=secret 403");
+        assert!(m.contains("exit 1")); assert!(m.contains("refused")); assert!(!m.contains("secret"));
+        assert!(super::ytdlp_failure(Some(2), "").contains("no error details"));
+        assert!(super::ytdlp_failure(None, "ffmpeg not found").contains("FFmpeg"));
+        assert!(super::ytdlp_failure(Some(1), "Sign in to confirm you're not a bot").contains("official YouTube"));
     }
 }
 

@@ -543,6 +543,16 @@ pub fn kv_get(key: &str) -> Option<String> {
 
 pub fn wetube_kv_set(key: &str, v: &str) -> bool { save_setting_json(key, &v).is_ok() }
 
+/// Checked local state read. Existing legacy KV format remains unchanged.
+pub fn wetube_kv_read(key: &str) -> Result<Option<String>> {
+    let conn = db().lock();
+    let raw: Option<String> = conn.query_row("SELECT value FROM kv WHERE key=?1", [key], |row| row.get(0)).optional()?;
+    raw.map(|value| {
+        anyhow::ensure!(value.len() <= 2 * 1024 * 1024, "Saved local state exceeds size limit");
+        Ok(serde_json::from_str::<String>(&value)?)
+    }).transpose()
+}
+
 pub fn kv_set(key: &str, v: &str) {
     let _ = save_setting_json(key, &v);
 }

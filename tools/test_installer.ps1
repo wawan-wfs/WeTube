@@ -36,6 +36,13 @@ try {
     Run-Wait $exe @('--runtime-self-test',(Quote $fixture),(Quote $report)) 45
     $result = Get-Content $report -Raw | ConvertFrom-Json
     if ($result.status -ne 'PASS' -or !$result.file_loaded -or $result.frame_width -le 0 -or $result.frame_height -le 0) { throw 'Native renderer did not pass' }
+    $motion = Join-Path $evidence 'motion.avi'
+    python tools/motion_fixture.py $motion
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $motionReport = Join-Path $evidence 'motion.json'
+    Run-Wait $exe @('--runtime-video-test',(Quote $motion),(Quote $motionReport)) 45
+    $moving = Get-Content $motionReport -Raw | ConvertFrom-Json
+    if ($moving.status -ne 'PASS' -or !$moving.distinct_frames -or !$moving.seek_confirmed) { throw 'Moving video/seek acceptance failed' }
     $gui = Start-Process -FilePath $exe -PassThru
     try {
         $window = [IntPtr]::Zero

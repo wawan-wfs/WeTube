@@ -60,7 +60,7 @@ pub fn save_window_bounds(window: &Window) {
 }
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("--runtime-self-test") {
+    if matches!(std::env::args().nth(1).as_deref(), Some("--runtime-self-test" | "--runtime-video-test")) {
         std::process::exit(wetube_runtime::run_cli());
     }
     perf::mark("main");

@@ -1097,11 +1097,11 @@ impl SettingsPage {
 
     fn about(&self, cx: &mut Context<Self>) -> Div {
         let s = store::settings_snapshot();
-        let mpv = crate::player::mpv::available();
+        let mpv_status = crate::player::mpv::diagnostic();
         card(cx)
             .child(row("WeTube Desktop", &format!("Native Edition {} • by WFS Project", env!("CARGO_PKG_VERSION")), div(), cx))
             .child(row("Interface", "Native GPUI · GPU-rendered · SQLite local library", div(), cx))
-            .child(row("Video engine", if mpv { "libmpv" } else if cfg!(windows) { "libmpv-2.dll not found" } else { "libmpv not found (install the libmpv package)" }, div(), cx))
+            .child(row("Video engine", &mpv_status, pill("wetube-recheck-engine", Some("refresh-cw"), "Recheck", cx).on_click(|_, _, cx| { cx.refresh_windows(); }), cx))
             .child(row("yt-dlp", self.ytdlp_version.as_deref().unwrap_or("not installed"), div(), cx))
             .child({
                 use crate::updater::Status;

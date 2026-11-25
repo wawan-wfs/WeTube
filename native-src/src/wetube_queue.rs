@@ -32,7 +32,7 @@ pub fn save(queue: &[VideoItem], selected: Option<usize>) -> anyhow::Result<()> 
     Ok(())
 }
 pub fn load() -> anyhow::Result<Option<(Vec<VideoItem>, usize)>> {
-    let Some(raw) = crate::store::kv_get(KEY).filter(|v| !v.is_empty()) else { return Ok(None) };
+    let Some(raw) = crate::store::wetube_kv_read(KEY)?.filter(|v| !v.is_empty()) else { return Ok(None) };
     let s = decode(&raw)?;
     Ok(Some((s.entries.into_iter().map(|e| VideoItem { thumbnail: crate::api::innertube::default_thumb(&e.id), id: e.id, title: e.title, channel_name: e.channel, ..Default::default() }).collect(), s.selected)))
 }

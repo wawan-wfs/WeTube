@@ -81,7 +81,7 @@ def audit(up, native):
         expected = {"src/wetube_migration.rs":"081f2e759c07ee1cd342769cb7a13da2c9335183",
                     "src/wetube_session.rs":"9497835e0a5c1e7dae8ba19afc7c52c39684cd28",
                     "src/wetube_links.rs":"ea285f009bc2b27f6c971afdb1fb52dfd756b4cd",
-                    "src/wetube_queue.rs":"1e9344db18e540c933e997fa87651f263b4a47a7",
+                    "src/wetube_queue.rs":"b86dcfe58272edd84a8766b1d29f33bd774b9bb3",
                     "src/wetube_import_schema.sql":"58dbd39626f1296829b7a197fc07d929e616e37d"}[name]
         if native[name] != expected:
             raise ValueError("Baseline module bytes changed: " + name)

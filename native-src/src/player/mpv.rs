@@ -209,6 +209,13 @@ pub fn available() -> bool {
     lib().is_ok()
 }
 
+pub fn diagnostic() -> String {
+    match lib() {
+        Ok(_) => "libmpv loaded successfully (not a playback test)".into(),
+        Err(e) => format!("Runtime unavailable: {e}"),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum MpvEvent {
     FileLoaded,

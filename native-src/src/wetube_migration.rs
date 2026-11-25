@@ -126,7 +126,19 @@ pub fn import(conn:&mut Connection, value:&Value)->Result<ImportReport> {
 mod tests {
     use super::*;
     #[test] fn strict_urls(){assert_eq!(video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),Some(("dQw4w9WgXcQ",false)));assert!(video_id("https://www.youtube.com.evil/watch?v=dQw4w9WgXcQ").is_none());assert!(video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ&v=bad").is_none());}
-    #[test] fn timestamps(){assert_eq!(timestamp(&json!(1700000000123)).unwrap(),1700000000);assert!(timestamp(&json!(-1)).is_err());}
+    #[test]
+    fn timestamps() {
+        assert_eq!(timestamp(&json!(1700000000123i64)).unwrap(), 1700000000i64);
+        assert!(timestamp(&json!(-1i64)).is_err());
+        assert_eq!(timestamp(&Value::Null).unwrap(), 0);
+        assert_eq!(timestamp(&json!(0i64)).unwrap(), 0);
+        assert_eq!(timestamp(&json!(999i64)).unwrap(), 0);
+        assert_eq!(timestamp(&json!(1000i64)).unwrap(), 1);
+        assert_eq!(timestamp(&json!(MAX_MS)).unwrap(), MAX_MS / 1000);
+        assert!(timestamp(&json!(MAX_MS + 1)).is_err());
+        assert!(timestamp(&json!("1700000000123")).is_err());
+        assert!(timestamp(&json!(1.5)).is_err());
+    }
     #[test] fn handles_are_not_ids(){assert_eq!(channel("https://www.youtube.com/@name").unwrap().1,true);assert!(channel("https://www.youtube.com/@x/path").is_none());}
     #[test] fn rejects_before_db(){let bad=json!({"format":"wetube-library","version":1,"favorites":[],"history":[{"url":"file:///x"}]});assert!(parse(&bad).is_err());}
     fn db()->Connection {

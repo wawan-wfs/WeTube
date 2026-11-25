@@ -77,7 +77,7 @@ def audit(up, native):
         if name not in native or (native[name] != sha and not mutable(name)):
             raise ValueError("Missing or unauthorized upstream change: " + name)
     for name in ("src/wetube_migration.rs", "src/wetube_session.rs", "src/wetube_import_schema.sql"):
-        expected = {"src/wetube_migration.rs":"11de7a432752baa7857b5f2dcfd7f92f7c98b109",
+        expected = {"src/wetube_migration.rs":"081f2e759c07ee1cd342769cb7a13da2c9335183",
                     "src/wetube_session.rs":"1ef42ad4109a11ed181718f1176ed21418d375e5",
                     "src/wetube_import_schema.sql":"58dbd39626f1296829b7a197fc07d929e616e37d"}[name]
         if native[name] != expected:

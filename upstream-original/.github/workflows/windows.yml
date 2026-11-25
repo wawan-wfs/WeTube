@@ -1,0 +1,122 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "Cargo.toml", "Cargo.lock", "build.rs", "assets/**", "installer/**", ".github/workflows/windows.yml"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Also build the installer and the zip"
+        type: boolean
+        default: false
+  # release.yml builds the release packages with this
+  workflow_call:
+    inputs:
+      package:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # libmpv from shinchiro's mpv builds, pinned to one release and checked against
+  # its SHA-256, so a release always ships the same, known libmpv
+  MPV_URL: https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-dev-x86_64-20261111-git-bcde6b93cc.7z
+  MPV_SHA256: 273c079b11ea5575822f972756f4c9a71149a5c10130353abeb8586738938452
+  # libmpv links against vulkan-1.dll, which PCs without a Vulkan GPU driver
+  # (e.g. Intel HD 4000) don't have; the app ships the Khronos loader, built
+  # here from a pinned tag, and loads it only when Windows has none
+  VULKAN_LOADER_TAG: v1.3.296
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # libmpv is loaded at runtime, so building and testing don't need it
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Get libmpv
+        if: inputs.package
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:MPV_URL -OutFile mpv.7z
+          $hash = (Get-FileHash mpv.7z -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:MPV_SHA256) { throw "libmpv archive checksum mismatch: $hash" }
+          New-Item -ItemType Directory -Force third_party/mpv | Out-Null
+          7z e -y mpv.7z libmpv-2.dll -othird_party/mpv | Out-Null
+          Get-Item third_party/mpv/libmpv-2.dll
+
+      - name: Build the Vulkan loader
+        if: inputs.package
+        shell: pwsh
+        run: |
+          git clone --quiet --depth 1 --branch $env:VULKAN_LOADER_TAG https://github.com/KhronosGroup/Vulkan-Loader.git vulkan-loader
+          cmake -S vulkan-loader -B vulkan-loader/build -A x64 -D UPDATE_DEPS=ON -D BUILD_TESTS=OFF -D CMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+          cmake --build vulkan-loader/build --config Release --target vulkan
+          if ($LASTEXITCODE -ne 0) { throw "Vulkan loader build failed" }
+          New-Item -ItemType Directory -Force third_party/vulkan | Out-Null
+          $dll = Get-ChildItem -Recurse vulkan-loader/build -Filter vulkan-1.dll | Select-Object -First 1
+          Copy-Item $dll.FullName third_party/vulkan/vulkan-1.dll
+          Copy-Item vulkan-loader/LICENSE.txt third_party/vulkan/LICENSE.txt
+
+      # libmpv must load with only the bundled loader, as on a PC without a Vulkan driver
+      - name: Check libmpv loads with the bundled Vulkan loader
+        if: inputs.package
+        shell: pwsh
+        run: |
+          Add-Type -Namespace Native -Name K32 -MemberDefinition '[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr LoadLibraryW(string p);'
+          $v = [Native.K32]::LoadLibraryW((Resolve-Path third_party/vulkan/vulkan-1.dll).Path)
+          if ($v -eq [IntPtr]::Zero) { throw "vulkan-1.dll did not load: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+          $m = [Native.K32]::LoadLibraryW((Resolve-Path third_party/mpv/libmpv-2.dll).Path)
+          if ($m -eq [IntPtr]::Zero) { throw "libmpv-2.dll did not load: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+          "libmpv and the Vulkan loader load"
+
+      - name: Package
+        id: pkg
+        if: inputs.package
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          New-Item -ItemType Directory -Force dist | Out-Null
+
+          # installer
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress | Out-Null
+          }
+          & $iscc /Q "/DAppVersion=$version" installer\streamtube.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+          # zip: the app and libmpv, to run without installing
+          $name = "StreamTube-$version-windows-x64"
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item target/release/streamtube.exe, third_party/mpv/libmpv-2.dll, README.md "dist/$name/"
+          New-Item -ItemType Directory -Force "dist/$name/vulkan" | Out-Null
+          Copy-Item third_party/vulkan/vulkan-1.dll, third_party/vulkan/LICENSE.txt "dist/$name/vulkan/"
+          Copy-Item LICENSE "dist/$name/LICENSE.txt"
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
+          Remove-Item -Recurse "dist/$name"
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.package
+        with:
+          name: windows-x64
+          path: |
+            dist/*-setup.exe
+            dist/*.zip
+          if-no-files-found: error

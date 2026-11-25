@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+
+# libmpv binaries are too large for git; see the README for where to get them
+/third_party/mpv/
+
+*.pdb
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# installers and packages
+/dist/
+
+# built in CI from the Khronos Vulkan-Loader sources
+/third_party/vulkan/

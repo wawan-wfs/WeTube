@@ -1,0 +1,113 @@
+name: Release
+
+# Builds every download in public on GitHub's runners, then puts them on a draft
+# release together with SHA256SUMS.txt and a signed build provenance attestation
+# for each file. Publishing the draft is left to a maintainer; once published,
+# immutable releases keep the files from being changed.
+#
+# Start it by pushing a version tag (git tag v0.7.2-alpha && git push origin v0.7.2-alpha)
+# or from the Actions tab, choosing the tag under "Use workflow from".
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches Cargo.toml
+        id: v
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ "${{ github.ref_type }}" != "tag" ]; then
+            echo "::error::run this from a version tag, not a branch"
+            exit 1
+          fi
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match the version in Cargo.toml ($version)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: check
+    uses: ./.github/workflows/linux.yml
+
+  windows:
+    needs: check
+    uses: ./.github/workflows/windows.yml
+    with:
+      package: true
+
+  publish:
+    needs: [check, linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the draft release and upload its files
+      id-token: write       # sign the attestations (Sigstore)
+      attestations: write   # store them on GitHub
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          ls -l
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "dist/*"
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.check.outputs.tag }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          pre=()
+          case "$VERSION" in *-*) pre=(--prerelease) ;; esac
+          if state=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$state" != "true" ]; then
+              echo "::error::release $TAG is already published; its files can't be replaced"
+              exit 1
+            fi
+            # a draft written by hand keeps its notes and gets the files
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --draft --verify-tag "${pre[@]}" \
+              --title "Stream Tube $VERSION" --generate-notes
+          fi
+
+          {
+            echo "### Draft release $TAG is ready"
+            echo
+            echo "Check the notes and publish it from the Releases page."
+            echo
+            echo '```'
+            cat dist/SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

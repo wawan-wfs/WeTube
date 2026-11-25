@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Stream Tube
+GenericName=YouTube client
+Comment=Watch YouTube without ads, sponsor reads or a browser
+Exec=streamtube %u
+Icon=streamtube
+Terminal=false
+Categories=AudioVideo;Video;Player;Network;
+Keywords=youtube;video;player;
+MimeType=x-scheme-handler/streamtube;
+StartupWMClass=streamtube

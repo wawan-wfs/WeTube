@@ -1,0 +1,162 @@
+name: Linux build
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "Cargo.toml", "Cargo.lock", "build.rs", "packaging/linux/**", ".github/workflows/linux.yml"]
+  # every pull request is built and its packages checked (no path filter, so the
+  # required check always reports)
+  pull_request:
+  workflow_dispatch:
+  # release.yml builds the release packages with this
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    # the oldest supported Ubuntu keeps the binary compatible with older glibc
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake clang \
+            libfontconfig1-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libvulkan-dev libssl-dev libzstd-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        id: pkg
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          name="StreamTube-${version}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp target/release/streamtube "dist/$name/"
+          strip "dist/$name/streamtube"
+          cp packaging/linux/streamtube.desktop packaging/linux/install.sh "dist/$name/"
+          chmod +x "dist/$name/install.sh"
+          cp assets/logo.png "dist/$name/streamtube.png"
+          cp LICENSE README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          echo "file=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb and .rpm
+        id: native
+        run: |
+          sudo apt-get install -y --no-install-recommends ruby ruby-dev rpm dpkg-dev
+          sudo gem install --no-document fpm
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          # "0.2.0-alpha" -> "0.2.0~alpha", which both dpkg and rpm sort before "0.2.0"
+          pkgver=$(echo "$version" | sed 's/-/~/')
+
+          root=pkgroot
+          install -Dm755 target/release/streamtube "$root/usr/bin/streamtube"
+          strip "$root/usr/bin/streamtube"
+          install -Dm644 packaging/linux/streamtube.desktop "$root/usr/share/applications/streamtube.desktop"
+          install -Dm644 assets/logo.png "$root/usr/share/icons/hicolor/256x256/apps/streamtube.png"
+          install -Dm644 assets/logo.svg "$root/usr/share/icons/hicolor/scalable/apps/streamtube.svg"
+          install -Dm644 packaging/linux/io.github.avaneesh_inamdar.StreamTube.metainfo.xml "$root/usr/share/metainfo/io.github.avaneesh_inamdar.StreamTube.metainfo.xml"
+          install -Dm644 LICENSE "$root/usr/share/doc/streamtube/LICENSE"
+          install -Dm644 README.md "$root/usr/share/doc/streamtube/README.md"
+
+          # shared libraries the binary links against, as Debian package names
+          mkdir -p debian && echo "Source: streamtube" > debian/control
+          shlibs=$(dpkg-shlibdeps -O "$root/usr/bin/streamtube" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')
+          echo "linked libraries: $shlibs"
+          rm -rf debian
+
+          common=(
+            -s dir -C "$root" -n streamtube -v "$pkgver" -a x86_64
+            --license MIT --url "https://github.com/Avaneesh-Inamdar/Stream-Tube-Desktop"
+            --maintainer "Stream Tube <noreply@github.com>"
+            --description "Stream Tube - a fast native YouTube client with SponsorBlock, DeArrow and Return YouTube Dislike"
+            --category video
+            --after-install packaging/linux/postinst.sh --after-remove packaging/linux/postinst.sh
+          )
+
+          # video plays through libmpv, loaded at runtime
+          deb_deps=()
+          IFS=',' read -ra parts <<< "$shlibs"
+          for d in "${parts[@]}"; do d=$(echo "$d" | xargs); [ -n "$d" ] && deb_deps+=(--depends "$d"); done
+          fpm "${common[@]}" -t deb -p dist/ "${deb_deps[@]}" --depends "libmpv2 | libmpv1" --deb-recommends yt-dlp --deb-recommends ffmpeg usr
+
+          fpm "${common[@]}" -t rpm -p dist/ --rpm-autoreqprov --depends "(mpv-libs or libmpv2 or mpv)" usr
+
+          # GitHub turns "~" in asset names into "."; the file names use the plain
+          # version, the package metadata keeps "~" so upgrades sort correctly
+          mv dist/*.deb "dist/streamtube_${version}_amd64.deb"
+          mv dist/*.rpm "dist/streamtube-${version}.x86_64.rpm"
+          ls -l dist
+          deb=$(ls dist/*.deb); rpm=$(ls dist/*.rpm)
+          dpkg-deb --info "$deb"
+          rpm -qpR "$rpm"
+          echo "deb=$deb" >> "$GITHUB_OUTPUT"
+          echo "rpm=$rpm" >> "$GITHUB_OUTPUT"
+
+      - name: Build AppImage
+        id: appimage
+        run: |
+          # libmpv (and everything it links against) goes inside, so the AppImage
+          # plays video on any distribution without installing anything
+          sudo apt-get install -y --no-install-recommends libmpv1 file desktop-file-utils appstream
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          out="dist/StreamTube-${version}-x86_64.AppImage"
+          wget -q -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+
+          app=AppDir
+          install -Dm755 target/release/streamtube "$app/usr/bin/streamtube"
+          strip "$app/usr/bin/streamtube"
+          # inside the AppImage the desktop entry and metadata are named after the app id
+          cid=io.github.avaneesh_inamdar.StreamTube
+          install -Dm644 packaging/linux/streamtube.desktop "$app/usr/share/applications/$cid.desktop"
+          install -Dm644 assets/logo.png "$app/usr/share/icons/hicolor/256x256/apps/streamtube.png"
+          install -Dm644 assets/logo.svg "$app/usr/share/icons/hicolor/scalable/apps/streamtube.svg"
+          install -Dm644 LICENSE "$app/usr/share/doc/streamtube/LICENSE"
+          mkdir -p "$app/usr/share/metainfo"
+          sed "s|>streamtube.desktop<|>$cid.desktop<|" "packaging/linux/$cid.metainfo.xml" > "$app/usr/share/metainfo/$cid.metainfo.xml"
+          desktop-file-validate "$app/usr/share/applications/$cid.desktop" || true
+          appstreamcli validate --no-net "$app/usr/share/metainfo/$cid.metainfo.xml" || true
+
+          mpv=$(ls /usr/lib/x86_64-linux-gnu/libmpv.so.2 /usr/lib/x86_64-linux-gnu/libmpv.so.1 2>/dev/null | head -1)
+          echo "bundling $mpv"
+          # no FUSE on the runner: let the tool unpack itself
+          export APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 LDAI_OUTPUT="$out"
+          ./linuxdeploy --appdir "$app" --library "$mpv" --output appimage
+
+          # libmpv and its libraries are inside, and nothing it needs is missing
+          ls "$app/usr/lib" | grep -E '^libmpv\.so'
+          if LD_LIBRARY_PATH="$app/usr/lib" ldd "$app/usr/lib/$(basename "$mpv")" | grep "not found"; then
+            echo "libmpv is missing libraries"; exit 1
+          fi
+          chmod +x "$out"
+          ls -l "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Check the .deb installs
+        run: |
+          sudo apt-get install -y "./${{ steps.native.outputs.deb }}"
+          test -x /usr/bin/streamtube
+          ls /usr/share/applications/streamtube.desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: |
+            ${{ steps.pkg.outputs.file }}
+            ${{ steps.native.outputs.deb }}
+            ${{ steps.native.outputs.rpm }}
+            ${{ steps.appimage.outputs.file }}
+          if-no-files-found: error
+

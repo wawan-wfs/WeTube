@@ -65,7 +65,7 @@ def read_verified(prefix, rows):
     return result
 
 def mutable(name):
-    return name in {"Cargo.toml", "Cargo.lock", "README.md", "assets/logo.svg", "assets/logo.png", "assets/streamtube.ico", "installer/wetube.iss"} or (name.startswith("src/") and name.endswith(".rs")) or name.startswith("assets/accent/")
+    return name in {"Cargo.toml", "Cargo.lock", "README.md", "assets/logo.svg", "assets/logo.png", "assets/streamtube.ico", "assets/streamtube.rc", "installer/wetube.iss"} or (name.startswith("src/") and name.endswith(".rs")) or name.startswith("assets/accent/")
 
 def audit(up, native):
     if len(up) != 120 or not REQUIRED <= native.keys():

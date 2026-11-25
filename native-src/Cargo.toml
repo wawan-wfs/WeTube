@@ -2,7 +2,7 @@
 name = "wetube"
 version = "0.8.0"
 edition = "2024"
-description = "A YouTube desktop client in Rust + GPUI with SponsorBlock, DeArrow, RYD, local subscriptions & more"
+description = "WeTube Desktop by WFS Project - native Rust GPUI media client with local library"
 license = "MIT"
 
 [dependencies]

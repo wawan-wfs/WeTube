@@ -850,7 +850,7 @@ impl AppView {
                             div()
                                 .text_xs()
                                 .text_color(p.text3)
-                                .child("Videos you watch in Stream Tube then show in your YouTube history, and your phone and TV resume them where you stopped. The window uses its own empty profile, which is deleted afterwards."),
+                                .child("WeTube keeps your local library separate. Account synchronization is not available in this build."),
                         ),
                 )
                 .child(
@@ -1099,7 +1099,7 @@ impl AppView {
             self.history.remove(0);
         }
         self.forward.clear();
-        window.set_window_title(&format!("{} - WeTube Desktop", self.route.title()));
+        window.set_window_title(&format!("{} - {}", self.route.title(), crate::PRODUCT_FULL_NAME));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1177,7 +1177,7 @@ impl AppView {
         if cx.global::<UiState>().fullscreen && !matches!(self.route, Route::Watch { .. }) {
             toggle_fullscreen(window, cx);
         }
-        window.set_window_title(&format!("{} - WeTube Desktop", self.route.title()));
+        window.set_window_title(&format!("{} - {}", self.route.title(), crate::PRODUCT_FULL_NAME));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1366,7 +1366,7 @@ impl AppView {
                     self.page = build_page(&self.route.clone(), window, cx);
                 }
             }
-            window.set_window_title(&format!("{} - WeTube Desktop", self.route.title()));
+            window.set_window_title(&format!("{} - {}", self.route.title(), crate::PRODUCT_FULL_NAME));
             cx.notify();
         }
     }
@@ -1383,7 +1383,7 @@ impl AppView {
                     self.page = build_page(&self.route.clone(), window, cx);
                 }
             }
-            window.set_window_title(&format!("{} - WeTube Desktop", self.route.title()));
+            window.set_window_title(&format!("{} - {}", self.route.title(), crate::PRODUCT_FULL_NAME));
             cx.notify();
         }
     }
@@ -2731,7 +2731,7 @@ impl AppView {
                                 ),
                         ),
                     )
-                    .child(div().text_xs().text_color(p.text2).child("Stream Tube restarts by itself when it's done.")),
+                    .child(div().text_xs().text_color(p.text2).child("WeTube Desktop restarts after an authorized update.")),
             );
             return div().flex().flex_col().child(hero).child(body).into_any_element();
         }

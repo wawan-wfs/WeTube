@@ -1,10 +1,14 @@
-#define AppName "WeTube Desktop"
+#define AppName "WeTube Desktop by WFS Project"
 #define AppVersion "0.8.0"
 [Setup]
 AppId={{0F9A10D4-4D59-4CB5-9299-A6984FCF4AC0}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=WFS Project
+VersionInfoCompany=WFS Project
+VersionInfoDescription=WeTube Desktop by WFS Project
+VersionInfoProductName=WeTube Desktop by WFS Project
+VersionInfoVersion=0.8.0.0
 DefaultDirName={localappdata}\Programs\WeTube Desktop Native
 DefaultGroupName=WeTube Desktop
 PrivilegesRequired=lowest
@@ -26,8 +30,8 @@ Source: "{tmp}\wetube-runtime\libmpv-2.dll"; DestDir: "{app}"; Flags: external i
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "UPSTREAM-LICENSE.txt"; Flags: ignoreversion
 Source: "runtime-notice.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 [Icons]
-Name: "{group}\WeTube Desktop"; Filename: "{app}\wetube.exe"
-Name: "{userdesktop}\WeTube Desktop"; Filename: "{app}\wetube.exe"; Tasks: desktopicon
+Name: "{group}\WeTube Desktop"; Filename: "{app}\wetube.exe"; Comment: "WeTube Desktop by WFS Project"
+Name: "{userdesktop}\WeTube Desktop"; Filename: "{app}\wetube.exe"; Comment: "WeTube Desktop by WFS Project"; Tasks: desktopicon
 [Tasks]
 Name: "desktopicon"; Description: "Create desktop shortcut"
 

@@ -408,5 +408,5 @@ pub fn wordmark(cx: &App) -> Div {
         .gap(px(5.))
         .text_lg()
         .font_weight(FontWeight::BOLD)
-        .child(div().flex().flex_col().gap(px(0.)).child(div().text_color(p.text).child("WeTube Desktop")).child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(p.text2).child("by WFS Project")))
+        .child(div().flex().flex_col().gap(px(0.)).child(div().text_color(p.text).child(crate::PRODUCT_NAME)).child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(p.text2).child(crate::PRODUCT_CREDIT)))
 }

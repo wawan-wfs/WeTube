@@ -25,6 +25,11 @@ try {
     $exeSha = (Get-FileHash $exe -Algorithm SHA256).Hash
     $buildSha = (Get-FileHash native-src/target/release/wetube.exe -Algorithm SHA256).Hash
     if ($exeSha -ne $buildSha) { throw 'Installed executable hash mismatch' }
+    $vi = (Get-Item -LiteralPath $exe).VersionInfo
+    if ($vi.ProductName -ne 'WeTube Desktop by WFS Project' -or $vi.FileDescription -ne 'WeTube Desktop by WFS Project' -or $vi.CompanyName -ne 'WFS Project') { throw 'Installed executable branding metadata mismatch' }
+    $si = $setup.VersionInfo
+    if ($si.ProductName -ne 'WeTube Desktop by WFS Project' -or $si.CompanyName -ne 'WFS Project') { throw 'Installer branding metadata mismatch' }
+    @{status='PASS'; exe_product=$vi.ProductName; exe_description=$vi.FileDescription; exe_company=$vi.CompanyName; setup_product=$si.ProductName; setup_company=$si.CompanyName} | ConvertTo-Json | Set-Content (Join-Path $evidence 'branding.json')
     $fixture = Join-Path $evidence 'local.ppm'
     $header = [Text.Encoding]::ASCII.GetBytes(('P6' + [char]10 + '160 90' + [char]10 + '255' + [char]10))
     $pixels = [byte[]]::new(160 * 90 * 3)
@@ -54,6 +59,7 @@ try {
             if ($window -ne [IntPtr]::Zero) { break }
         }
         if ($window -eq [IntPtr]::Zero) { throw 'No native window within 30 seconds' }
+        if ($gui.MainWindowTitle -notlike '*WeTube Desktop by WFS Project*') { throw 'Native window title branding mismatch' }
         @{status='PASS'; window_handle=$window.ToInt64(); title=$gui.MainWindowTitle; scope='native window created; no interaction or YouTube playback verified'} | ConvertTo-Json | Set-Content (Join-Path $evidence 'gui-startup.json')
     } finally {
         if (!$gui.HasExited) {

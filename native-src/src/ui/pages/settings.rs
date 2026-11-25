@@ -936,7 +936,7 @@ impl SettingsPage {
         card(cx)
             .child(row(
                 "Playback client",
-                "Which YouTube app Stream Tube presents itself as to get video streams. Try another one if videos stop playing or fail to load.",
+                "Media source selection. Availability depends on the provider and your authorized access.",
                 self.choice(
                     "sb2",
                     &[
@@ -1010,7 +1010,7 @@ impl SettingsPage {
                 "yt-dlp",
                 &match &self.ytdlp_version {
                     Some(v) => format!("Installed ({v}). Downloads in every quality, with SponsorBlock chapters"),
-                    None => "Needed for downloads above 360p. Stream Tube can fetch it for you".into(),
+                    None => "Needed for downloads above 360p. WeTube Desktop can fetch it for you".into(),
                 },
                 if let Some(f) = crate::downloads::ytdlp_fetch() {
                     fetch_progress("ytdlp-prog", f, cx)
@@ -1027,7 +1027,7 @@ impl SettingsPage {
                 "FFmpeg",
                 match self.ffmpeg_found {
                     Some(true) => "Installed. Joins the video and audio of downloads above 360p",
-                    Some(false) => "Needed to join video and audio above 360p. Stream Tube can fetch it for you",
+                    Some(false) => "Needed to join video and audio above 360p. WeTube Desktop can fetch it for you",
                     None => "",
                 },
                 if let Some(f) = crate::downloads::ffmpeg_fetch() {
@@ -1099,7 +1099,7 @@ impl SettingsPage {
         let s = store::settings_snapshot();
         let mpv_status = crate::player::mpv::diagnostic();
         card(cx)
-            .child(row("WeTube Desktop", &format!("Native Edition {} • by WFS Project", env!("CARGO_PKG_VERSION")), div(), cx))
+            .child(row(crate::PRODUCT_FULL_NAME, &format!("Native Edition {} · Rust GPUI", env!("CARGO_PKG_VERSION")), div(), cx))
             .child(row("Interface", "Native GPUI · GPU-rendered · SQLite local library", div(), cx))
             .child(row("Video engine", &mpv_status, pill("wetube-recheck-engine", Some("refresh-cw"), "Recheck", cx).on_click(|_, _, cx| { cx.refresh_windows(); }), cx))
             .child(row("yt-dlp", self.ytdlp_version.as_deref().unwrap_or("not installed"), div(), cx))

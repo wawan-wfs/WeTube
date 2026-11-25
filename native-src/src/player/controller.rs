@@ -185,7 +185,7 @@ impl Player {
             ("volume-max", "150"),
             ("hr-seek", "yes"),
             ("force-seekable", "yes"),
-            ("audio-client-name", "Stream Tube"),
+            ("audio-client-name", crate::PRODUCT_FULL_NAME),
             ("sub-font-size", "42"),
             ("sub-border-size", "2.5"),
             ("sub-auto", "no"),

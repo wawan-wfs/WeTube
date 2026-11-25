@@ -19,6 +19,10 @@ mod wetube_links;
 mod wetube_queue;
 mod wetube_runtime;
 
+pub(crate) const PRODUCT_NAME: &str = "WeTube Desktop";
+pub(crate) const PRODUCT_CREDIT: &str = "by WFS Project";
+pub(crate) const PRODUCT_FULL_NAME: &str = "WeTube Desktop by WFS Project";
+
 use gpui_kit::*;
 
 /// Window placement from the last session (size, position, maximized), or a
@@ -97,7 +101,7 @@ fn main() {
             perf::mark("player init");
             let opts = WindowOptions {
                 window_bounds: Some(saved_window_bounds(cx)),
-                titlebar: Some(TitlebarOptions { title: Some("WeTube Desktop".into()), appears_transparent: true, ..Default::default() }),
+                titlebar: Some(TitlebarOptions { title: Some(PRODUCT_FULL_NAME.into()), appears_transparent: true, ..Default::default() }),
                 window_min_size: Some(size(px(720.), px(480.))),
                 ..Default::default()
             };

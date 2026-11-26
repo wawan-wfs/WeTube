@@ -653,7 +653,7 @@ fn bounded_tool_output(cmd: &mut Command, timeout: std::time::Duration) -> Resul
         });
         rx
     }
-    let mut child=cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child=crate::wetube_process::ScopedChild::spawn(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))?;
     let stdout=drain(child.stdout.take().ok_or_else(|| anyhow!("Media tool stdout unavailable"))?,16*1024*1024);
     let stderr=drain(child.stderr.take().ok_or_else(|| anyhow!("Media tool stderr unavailable"))?,256*1024);
     let deadline=Instant::now()+timeout;
@@ -661,8 +661,8 @@ fn bounded_tool_output(cmd: &mut Command, timeout: std::time::Duration) -> Resul
         match child.try_wait() {
             Ok(Some(s))=>break s,
             Ok(None) if Instant::now()<deadline=>std::thread::sleep(std::time::Duration::from_millis(50)),
-            Ok(None)=>{ let _=child.kill(); let _=child.wait(); return Err(anyhow!("Media tool timed out")); }
-            Err(e)=>{ let _=child.kill(); let _=child.wait(); return Err(e.into()); }
+            Ok(None)=>{ child.terminate(); return Err(anyhow!("Media tool timed out")); }
+            Err(e)=>{ child.terminate(); return Err(e.into()); }
         }
     };
     let remaining=deadline.saturating_duration_since(Instant::now());
@@ -684,18 +684,7 @@ pub fn ytdlp_streams(video_id: &str) -> Result<StreamInfo> {
     }
     cmd.arg(format!("https://www.youtube.com/watch?v={video_id}"));
     hide_window(&mut cmd);
-    let mut out = bounded_tool_output(&mut cmd, std::time::Duration::from_secs(90))?;
-    if !out.status.success() && crate::downloads::retry_with_ios(&String::from_utf8_lossy(&out.stderr)) {
-        // videos made for kids: yt-dlp's default clients refuse them, its iOS client doesn't
-        let mut retry = Command::new(ytdlp_path().unwrap_or_default());
-        retry.args(cmd.get_args()).arg("--extractor-args").arg(crate::downloads::YTDLP_IOS);
-        hide_window(&mut retry);
-        if let Ok(o) = bounded_tool_output(&mut retry, std::time::Duration::from_secs(90)) {
-            if o.status.success() {
-                out = o;
-            }
-        }
-    }
+    let out = bounded_tool_output(&mut cmd, std::time::Duration::from_secs(90))?;
     if !out.status.success() {
         return Err(anyhow!("{}", crate::downloads::ytdlp_failure(out.status.code(), &String::from_utf8_lossy(&out.stderr))));
     }

@@ -124,6 +124,71 @@ pub fn download_to(
     Ok(())
 }
 
+/// Use a fresh authorized media URL. Persist only the strong HTTP validator,
+/// representation ID and size, never the URL. Exact 206 required to append.
+pub fn download_resumable(url:&str,partial:&std::path::Path,key:&str,itag:u32,
+    mut progress:impl FnMut(u64,Option<u64>)->bool)->Result<()> {
+    use crate::wetube_resume::{Validator,MAX_BYTES,strong_etag,validate_append};
+    use std::io::{Seek,SeekFrom,Write};
+    let prior=crate::store::wetube_kv_read(key)?.filter(|s|!s.is_empty())
+        .map(|s|serde_json::from_str::<Validator>(&s)).transpose()?;
+    let mut file=match std::fs::symlink_metadata(partial) {
+        Ok(meta)=>{
+            anyhow::ensure!(meta.is_file() && !meta.file_type().is_symlink(),"Unsafe partial file");
+            std::fs::OpenOptions::new().read(true).write(true).open(partial)?
+        }
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(partial)?,
+        Err(e)=>return Err(e.into()),
+    };
+    let existing=file.metadata()?.len();
+    anyhow::ensure!(existing<=MAX_BYTES,"Partial download exceeds size limit");
+    let resume=prior.as_ref().filter(|v|v.valid(itag) && existing>0 && existing<v.total);
+    let mut req=agent().get(url).header("Accept-Encoding","identity");
+    if let Some(v)=resume {
+        req=req.header("Range",format!("bytes={existing}-")).header("If-Range",v.etag.as_str());
+    }
+    let mut resp=req.call().map_err(|_|anyhow!("Media download request failed"))?;
+    let status=resp.status().as_u16();
+    let header=|name:&str|resp.headers().get(name).and_then(|v|v.to_str().ok()).unwrap_or("").to_owned();
+    let etag=header("etag");
+    let content_range=header("content-range");
+    let encoding=header("content-encoding");
+    let length=header("content-length").parse::<u64>().ok();
+    anyhow::ensure!(encoding.is_empty() || encoding.eq_ignore_ascii_case("identity"),"Encoded representation cannot be resumed");
+    let (offset,total)=if status==206 {
+        let v=resume.ok_or_else(||anyhow!("Unexpected partial HTTP response"))?;
+        anyhow::ensure!(validate_append(v,existing,status,&content_range,&etag,length),"Resume validator or byte range changed");
+        (existing,Some(v.total))
+    } else if status==200 {
+        anyhow::ensure!(length.is_none_or(|n|n>0 && n<=MAX_BYTES),"Invalid media size");
+        anyhow::ensure!(crate::store::wetube_kv_set(key,""),"Could not clear previous resume validator");
+        file.set_len(0)?;file.sync_all()?;
+        if let Some(n)=length.filter(|_|strong_etag(&etag)) {
+            let data=serde_json::to_string(&Validator{version:1,itag,total:n,etag})?;
+            anyhow::ensure!(crate::store::wetube_kv_set(key,&data),"Could not persist resume validator");
+        }
+        (0,length)
+    } else {return Err(anyhow!("HTTP {status}"));};
+    file.seek(SeekFrom::Start(offset))?;
+    let mut done=offset;
+    let result=(||->Result<()> {
+        anyhow::ensure!(progress(done,total),"cancelled");
+        let mut reader=resp.body_mut().with_config().limit(MAX_BYTES).reader();
+        let mut buf=vec![0u8;256*1024];
+        loop {
+            let n=reader.read(&mut buf)?;if n==0{break;}
+            let next=done.checked_add(n as u64).ok_or_else(||anyhow!("Media size overflow"))?;
+            anyhow::ensure!(next<=MAX_BYTES && total.is_none_or(|t|next<=t),"Media response exceeds expected size");
+            file.write_all(&buf[..n])?;done=next;
+            anyhow::ensure!(progress(done,total),"cancelled");
+        }
+        anyhow::ensure!(done>0 && total.is_none_or(|n|done==n),"Incomplete media body");
+        Ok(())
+    })();
+    file.sync_all()?;
+    result
+}
+
 pub fn urlencode(s: &str) -> String {
     let mut o = String::with_capacity(s.len() * 3);
     for b in s.bytes() {

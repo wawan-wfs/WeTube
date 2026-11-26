@@ -382,7 +382,7 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
             cmd.args(["--sponsorblock-mark", "all"]);
         }
         hide_window(&mut cmd);
-        let mut child = cmd.spawn()?;
+        let mut child = crate::wetube_process::ScopedChild::spawn(&mut cmd)?;
         progress(0.0, "Getting video info…");
         let stdout = child.stdout.take().unwrap();
         // Drain both pipes concurrently; cancellation must not depend on a progress line.
@@ -412,8 +412,7 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
         let (mut phase, mut last_pct) = (0u32, 0.0f32);
         loop {
             if cancel.load(Ordering::SeqCst) || last_output.elapsed() > std::time::Duration::from_secs(600) {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.terminate();
                 if cancel.load(Ordering::SeqCst) { anyhow::bail!("cancelled"); }
                 anyhow::bail!("Download tool idle timeout");
             }
@@ -441,8 +440,7 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
         }
         let status = loop {
             if cancel.load(Ordering::SeqCst) || last_output.elapsed() > std::time::Duration::from_secs(600) {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.terminate();
                 if cancel.load(Ordering::SeqCst) { anyhow::bail!("cancelled"); }
                 anyhow::bail!("Download tool exit timeout");
             }
@@ -506,27 +504,19 @@ fn native_download(job: &Job, dir: &std::path::Path, cancel: &AtomicBool, progre
     };
     let path = dir.join(format!("{} [{}].{ext}", sanitize(&info.title), job.video.id));
     anyhow::ensure!(!path.exists(), "Destination already exists");
-    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
-    let partial = path.with_extension(format!("{ext}.part-{}-{nonce}", job.id));
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&partial)?;
-    let result = (|| -> anyhow::Result<()> {
-        crate::api::http::download_to(&fmt.url, &mut f, |done, total| {
-            let p = total.filter(|t| *t > 0).map(|t| done as f32 / t as f32).unwrap_or(0.0);
-            progress(p, &format!("{:.1} MB", done as f64 / 1e6));
-            !cancel.load(Ordering::SeqCst)
-        })?;
-        anyhow::ensure!(!cancel.load(Ordering::SeqCst), "cancelled");
-        anyhow::ensure!(f.metadata()?.len() > 0, "Empty download");
-        f.sync_all()?;
-        Ok(())
-    })();
-    drop(f);
-    let result = result.and_then(|_| {
-        commit_download(&partial, &path)?;
-        verify_output(dir, &path.to_string_lossy())
-    });
-    let _ = std::fs::remove_file(&partial);
-    result
+    anyhow::ensure!(valid_durable_id(&job.durable_id),"Invalid durable download identity");
+    let partial=dir.join(format!(".wetube-{}.part",job.durable_id));
+    let key=format!("wetube_resume_{}",job.durable_id);
+    crate::api::http::download_resumable(&fmt.url,&partial,&key,fmt.itag,|done,total| {
+        let p=total.filter(|t|*t>0).map(|t|done as f32/t as f32).unwrap_or(0.0);
+        progress(p,&format!("{:.1} MB",done as f64/1e6));
+        !cancel.load(Ordering::SeqCst)
+    })?;
+    anyhow::ensure!(!cancel.load(Ordering::SeqCst),"cancelled");
+    commit_download(&partial,&path)?;
+    let _=std::fs::remove_file(&partial);
+    let _=store::wetube_kv_set(&key,"");
+    verify_output(dir,&path.to_string_lossy())
 }
 
 pub fn cancel(id: u64, cx: &mut App) {

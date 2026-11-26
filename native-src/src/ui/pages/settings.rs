@@ -914,6 +914,22 @@ impl SettingsPage {
         card(cx)
             .child(row("Save watch history", "Kept locally on this computer; account sync is disabled", switch("he2", s.history_enabled, |s, v| s.history_enabled = v, cx), cx))
             .child(row("Save search history", "", switch("se", s.search_history_enabled, |s, v| s.search_history_enabled = v, cx), cx))
+            .child(row("Playback recovery", "Opt in to local queue and position checkpoints. Never plays automatically at launch.", pill("wetube-recovery-toggle", None, if s.wetube_recover_playback { "Disable" } else { "Enable" }, cx).on_click(|_, _, cx| {
+                let enabled = store::settings_snapshot().wetube_recover_playback;
+                if enabled {
+                    if !crate::wetube_recovery::clear() { toast(cx, "Could not erase recovery data; try again"); return; }
+                    store::update_settings(|s| s.wetube_recover_playback = false);
+                    toast(cx, "Playback recovery disabled and cleared");
+                } else {
+                    store::update_settings(|s| s.wetube_recover_playback = true);
+                    toast(cx, "Playback recovery enabled");
+                }
+                cx.refresh_windows();
+            }), cx))
+            .child(row("Clear playback recovery", "Does not delete saved queues or watch history.", pill("wetube-recovery-clear", Some("trash-2"), "Clear", cx).on_click(|_, _, cx| {
+                if crate::wetube_recovery::clear() { toast(cx, "Recovery snapshot cleared"); } else { toast(cx, "Could not clear recovery snapshot"); }
+                cx.refresh_windows();
+            }), cx))
             .child(row("Saved playback queue", "Saved only when you choose Save queue. Clear removes the local snapshot.", pill("wetube-clear-queue", Some("trash-2"), "Clear saved queue", cx).on_click(|_, window, cx| {
                 crate::ui::app::confirm("Clear saved queue?", "The saved snapshot will be removed. Current playback is unchanged.", "Clear", window, cx, |_, cx| {
                     if crate::wetube_queue::clear() { toast(cx, "Saved queue cleared"); } else { toast(cx, "Could not clear saved queue"); }

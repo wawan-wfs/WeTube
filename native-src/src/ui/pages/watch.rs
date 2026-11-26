@@ -429,6 +429,7 @@ impl WatchPage {
                                         p.queue_pos = wp.items.iter().position(|x| x.id == full.id);
                                     }
                                 }
+                                if !p.loading { p.checkpoint_recovery(); }
                                 cx.notify();
                             }
                         });
@@ -1299,9 +1300,9 @@ impl WatchPage {
                         Some(Arc::new(move |_, cx: &mut App| plc.update(cx, |p, cx| p.play_queue_index(i, cx)))),
                         cx,
                     )))
-                    .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{i}")), None, "↑", cx).on_click(move |_, _, cx| up.update(cx, |p, cx| { crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, true); cx.notify(); }))))
-                    .when(i + 1 < queue.len(), |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, false); cx.notify(); }))))
-                    .when(pos != Some(i), |d| d.child(icon_button(SharedString::from(format!("queue-remove-{i}")), "x", cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { crate::wetube_queue::remove_item(&mut p.queue, &mut p.queue_pos, i); cx.notify(); })))),
+                    .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{i}")), None, "↑", cx).on_click(move |_, _, cx| up.update(cx, |p, cx| { if crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, true) { p.checkpoint_recovery(); } cx.notify(); }))))
+                    .when(i + 1 < queue.len(), |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { if crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, false) { p.checkpoint_recovery(); } cx.notify(); }))))
+                    .when(pos != Some(i), |d| d.child(icon_button(SharedString::from(format!("queue-remove-{i}")), "x", cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { if crate::wetube_queue::remove_item(&mut p.queue, &mut p.queue_pos, i) { p.checkpoint_recovery(); } cx.notify(); })))),
             );
         }
         let plc2 = pl.clone();
@@ -1340,6 +1341,7 @@ impl WatchPage {
                                         indexed.shuffle(&mut rand::rng());
                                         p.queue_pos = p.queue_pos.and_then(|old| indexed.iter().position(|(i, _)| *i == old));
                                         p.queue = indexed.into_iter().map(|(_, v)| v).collect();
+                                        p.checkpoint_recovery();
                                         cx.notify();
                                     })
                                 }))
@@ -1347,6 +1349,7 @@ impl WatchPage {
                                     plc3.update(cx, |p, cx| {
                                         p.queue.clear();
                                         p.queue_pos = None;
+                                        p.checkpoint_recovery();
                                         cx.notify();
                                     })
                                 })),

@@ -96,6 +96,7 @@ pub fn enqueue(v: VideoItem, cx: &mut App) {
             }
             p.queue.push(v);
         }
+        p.checkpoint_recovery();
         cx.notify();
     });
 }
@@ -464,7 +465,15 @@ impl Player {
         self.sb_prompt = prompt;
     }
 
+    /// Saves only local bounded recovery metadata when explicitly enabled.
+    pub fn checkpoint_recovery(&self) {
+        if let Some(v) = &self.video {
+            let _ = crate::wetube_recovery::save(v, &self.queue, self.queue_pos, self.time);
+        }
+    }
+
     pub fn save_progress(&mut self, force: bool) {
+        if !self.loading { self.checkpoint_recovery(); }
         if let Some(v) = &self.video {
             if force || self.time > 0.0 {
                 store::history_progress(&v.id, self.time, self.duration);
@@ -493,8 +502,10 @@ impl Player {
         self.video = Some(video.clone());
         self.loading = true;
         self.error = None;
-        self.time = 0.0;
+        self.time = start.unwrap_or(0.0);
+        self.last_progress_save = self.time;
         self.duration = video.duration_secs.unwrap_or(0) as f64;
+        self.checkpoint_recovery();
         self.eof = false;
         self.segments.clear();
         self.skipped.clear();
@@ -945,7 +956,7 @@ impl Player {
 
     pub fn seek_to(&mut self, t: f64) {
         if !t.is_finite() { return; }
-        let t = if self.duration > 0.0 { t.clamp(0.0, self.duration - 0.1) } else { t.max(0.0) };
+        let t = if self.duration.is_finite() && self.duration > 0.0 { t.clamp(0.0, (self.duration - 0.1).max(0.0)) } else { t.clamp(0.0, 604800.0) };
         self.time = t;
         if let Some(m) = &self.mpv {
             let _ = m.command(&["seek", &format!("{t}"), "absolute+exact"]);
@@ -958,6 +969,7 @@ impl Player {
     }
 
     pub fn set_volume(&mut self, v: f64) {
+        if !v.is_finite() { return; }
         let v = v.clamp(0.0, 150.0);
         self.volume = v;
         if let Some(m) = &self.mpv {
@@ -999,6 +1011,7 @@ impl Player {
     }
 
     pub fn set_speed(&mut self, s: f64) {
+        if !s.is_finite() { return; }
         let s = (s * 100.0).round() / 100.0;
         let s = s.clamp(0.1, 5.0);
         self.speed = s;
@@ -1051,6 +1064,7 @@ impl Player {
         self.loading = false;
         self.queue.clear();
         self.queue_pos = None;
+        let _ = crate::wetube_recovery::clear();
         if let Some(old) = self.frame.take() {
             cx.drop_image(old, None);
         }

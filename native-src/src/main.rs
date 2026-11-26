@@ -18,6 +18,7 @@ mod wetube_migration;
 mod wetube_links;
 mod wetube_queue;
 mod wetube_runtime;
+mod wetube_recovery;
 
 pub(crate) const PRODUCT_NAME: &str = "WeTube Desktop";
 pub(crate) const PRODUCT_CREDIT: &str = "by WFS Project";

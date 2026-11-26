@@ -16,6 +16,7 @@ const VR_UA: &str = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U
 /// request carries a PO token, so in "auto" mode yt-dlp provides the formats
 /// while the fast Innertube call contributes storyboards and captions.
 pub fn get_streams(video_id: &str) -> Result<StreamInfo> {
+    anyhow::ensure!(crate::wetube_session::valid_id(video_id), "Invalid video ID");
     if let Some(info) = cache_get(video_id) {
         return Ok(info);
     }
@@ -32,6 +33,7 @@ pub fn get_streams(video_id: &str) -> Result<StreamInfo> {
 
 /// Starts resolving streams in the background (e.g. when hovering a thumbnail).
 pub fn prefetch(video_id: &str) {
+    if !crate::wetube_session::valid_id(video_id) { return; }
     if cache_get(video_id).is_some() {
         return;
     }
@@ -43,6 +45,7 @@ pub fn prefetch(video_id: &str) {
 
 /// Prefetches after the pointer rests on a thumbnail for a moment.
 pub fn prefetch_on_hover(video_id: &str) {
+    if !crate::wetube_session::valid_id(video_id) { return; }
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::SeqCst) + 1;
@@ -74,8 +77,8 @@ fn resolve(video_id: &str) -> Result<StreamInfo> {
             let vision = visionos(video_id);
             if crate::perf::on() {
                 match &vision {
-                    Ok(i) => eprintln!("[streams] visionos ok in {:?}: {} variants, hls={:?}", t.elapsed(), i.video.len(), i.hls_url.as_deref().map(|u| &u[..u.len().min(80)])),
-                    Err(e) => eprintln!("[streams] visionos failed in {:?}: {e}", t.elapsed()),
+                    Ok(i) => eprintln!("[streams] visionos ok in {:?}: {} variants, hls={}", t.elapsed(), i.video.len(), i.hls_url.is_some()),
+                    Err(_) => eprintln!("[streams] visionos failed in {:?}", t.elapsed()),
                 }
             }
             let vision_err = match vision {
@@ -120,6 +123,7 @@ fn cache() -> &'static parking_lot::Mutex<Cache> {
 }
 
 const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(4 * 3600);
+const CACHE_LIMIT: usize = 96;
 
 fn cache_get(id: &str) -> Option<StreamInfo> {
     let c = cache().lock();
@@ -132,6 +136,9 @@ fn cache_put(id: &str, info: &StreamInfo) {
     }
     let mut c = cache().lock();
     c.retain(|_, (_, t)| t.elapsed() < CACHE_TTL);
+    if !c.contains_key(id) && c.len() >= CACHE_LIMIT {
+        if let Some(oldest) = c.iter().min_by_key(|(_, (_, t))| *t).map(|(key, _)| key.clone()) { c.remove(&oldest); }
+    }
     c.insert(id.to_string(), (info.clone(), std::time::Instant::now()));
 }
 
@@ -598,10 +605,18 @@ fn find_ytdlp(custom: &str) -> Option<String> {
     candidates.push("yt-dlp".into());
     for c in candidates {
         let mut cmd = Command::new(&c);
-        cmd.arg("--version");
+        cmd.arg("--version").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         hide_window(&mut cmd);
-        if cmd.output().map(|o| o.status.success()).unwrap_or(false) {
-            return Some(c);
+        if let Ok(mut child) = cmd.spawn() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) if status.success() => return Some(c),
+                    Ok(Some(_)) => break,
+                    Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+                    _ => { let _ = child.kill(); let _ = child.wait(); break; }
+                }
+            }
         }
     }
     None
@@ -617,9 +632,10 @@ pub fn hide_window(cmd: &mut Command) {
 }
 
 pub fn ytdlp_streams(video_id: &str) -> Result<StreamInfo> {
+    anyhow::ensure!(crate::wetube_session::valid_id(video_id), "Invalid video ID");
     let bin = ytdlp_path().ok_or_else(|| anyhow!("yt-dlp not found (install it or set its path in Settings)"))?;
     let mut cmd = Command::new(bin);
-    cmd.args(["--ignore-config", "-J", "--no-warnings", "--no-playlist"]);
+    cmd.args(["--ignore-config", "-J", "--no-warnings", "--no-playlist", "--socket-timeout", "20", "--retries", "2"]);
     if let Some(p) = crate::store::proxy_setting() {
         cmd.arg("--proxy").arg(p);
     }

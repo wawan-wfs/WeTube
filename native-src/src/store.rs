@@ -66,6 +66,7 @@ pub struct Settings {
     pub blocked_channels: Vec<(String, String)>,
     // Privacy
     pub wetube_restore_tabs: bool,
+    pub wetube_recover_playback: bool,
     pub history_enabled: bool,
     pub search_history_enabled: bool,
     /// look for a new version on GitHub at startup
@@ -186,6 +187,7 @@ impl Default for Settings {
             blocked_keywords: Vec::new(),
             blocked_channels: Vec::new(),
             wetube_restore_tabs: false,
+            wetube_recover_playback: false,
             history_enabled: false,
             search_history_enabled: false,
             check_updates: false,

@@ -302,7 +302,7 @@ pub struct LibraryPage {
 
 impl LibraryPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter local playlists"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search library and history"));
         cx.observe(&filter, |_, _, cx| cx.notify()).detach();
         let mut s = Self { scroll: ScrollHandle::new(), filter, yt: None };
         if crate::api::auth::signed_in() {
@@ -383,8 +383,9 @@ impl Render for LibraryPage {
                 })
                 .into_any_element(),
         );
-        let saved = store::saved_playlists();
-        let history: Vec<_> = store::history_list("", 12).into_iter().map(|h| h.video).collect();
+        let saved: Vec<_> = store::saved_playlists().into_iter().filter(|pl| pl.title.to_lowercase().contains(&q)).collect();
+        let history: Vec<_> = store::history_list(&q, 12).into_iter().map(|h| h.video).collect();
+        let recovery_enabled = store::settings_snapshot().wetube_recover_playback;
         let (_, hw) = grid_columns(width, 220.0);
         page_scroll("lib-scroll", &self.scroll).child(
             div()
@@ -409,7 +410,22 @@ impl Render for LibraryPage {
                             Ok(None) => toast(cx, "No saved queue. Save one from the watch page."),
                             Err(e) => toast(cx, e.to_string()),
                         }
-                    })).child(div().text_xs().text_color(p.text2).child("Restore explicitly; never starts on launch"))))
+                    })).child(div().text_xs().text_color(p.text2).child("Restore explicitly; never starts on launch")))
+                    .when(recovery_enabled, |d| d.child(div().flex().flex_wrap().items_center().gap_2()
+                        .child(pill("wetube-resume-recovery", Some("history"), "Resume last playback", cx).on_click(|_, window, cx| {
+                            match crate::wetube_recovery::load() {
+                                Ok(Some(r)) => {
+                                    let video = r.queue[r.selected].clone();
+                                    let id = video.id.clone();
+                                    crate::player::controller::player(cx).update(cx, |p, cx| {
+                                        p.queue = r.queue; p.queue_pos = Some(r.selected); p.play(video, Some(r.position), cx);
+                                    });
+                                    navigate(Route::Watch { id, playlist: None, start: None }, window, cx);
+                                }
+                                Ok(None) => toast(cx, "No recovery snapshot yet"),
+                                Err(e) => toast(cx, e.to_string()),
+                            }
+                        })).child(div().text_xs().text_color(p.text2).child("Private checkpoint · up to 200 items")))))
                 .when(!history.is_empty(), |d| {
                     d.child(
                         div()
@@ -431,7 +447,7 @@ impl Render for LibraryPage {
                     Load::Loading => spinner(cx).into_any_element(),
                     Load::Error(e) => div().text_sm().text_color(p.text2).child(format!("Could not load your YouTube playlists: {e}")).into_any_element(),
                     Load::Ready(l) if l.is_empty() => div().text_sm().text_color(p.text2).child("No playlists on your account yet").into_any_element(),
-                    Load::Ready(l) => grid(l.iter().map(|pl| playlist_card(pl, w, cx)).collect(), width).into_any_element(),
+                    Load::Ready(l) => grid(l.iter().filter(|pl| pl.title.to_lowercase().contains(&q)).map(|pl| playlist_card(pl, w, cx)).collect(), width).into_any_element(),
                 }), |d, body| {
                     d.child(div().flex().flex_col().gap_4().child(section_title("Your YouTube playlists", cx)).child(body))
                 })

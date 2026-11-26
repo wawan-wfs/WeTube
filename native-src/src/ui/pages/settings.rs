@@ -144,9 +144,23 @@ impl SettingsPage {
             let v = blocking(|| {
                 crate::api::streams::ytdlp_path().and_then(|p| {
                     let mut c = std::process::Command::new(p);
-                    c.arg("--version");
+                    use std::io::Read;
+                    c.arg("--version").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
                     crate::api::streams::hide_window(&mut c);
-                    c.output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    let mut child = c.spawn().ok()?;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    loop {
+                        match child.try_wait() {
+                            Ok(Some(status)) if status.success() => {
+                                let mut text = String::new();
+                                child.stdout.take()?.take(256).read_to_string(&mut text).ok()?;
+                                return Some(text.trim().to_string()).filter(|v| !v.is_empty());
+                            }
+                            Ok(Some(_)) => return None,
+                            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+                            _ => { let _ = child.kill(); let _ = child.wait(); return None; }
+                        }
+                    }
                 })
             })
             .await;

@@ -34,6 +34,8 @@ impl SearchPage {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         self.items = Load::Loading;
+        self.continuation = None;
+        self.loading_more = false;
         self.serial += 1;
         let serial = self.serial;
         let (q, f) = (self.query.clone(), self.filter);
@@ -62,15 +64,17 @@ impl SearchPage {
             self.loading_more = false;
             return;
         };
+        let serial = self.serial;
         cx.spawn(async move |this, cx| {
             let res = blocking(move || innertube::search_continue(&tok)).await;
             let _ = this.update(cx, |this, cx| {
+                if this.serial != serial { return; }
                 this.loading_more = false;
                 match res {
                     Ok(p) => {
                         if let Some(items) = this.items.ready_mut() {
-                            let seen: std::collections::HashSet<String> = items.iter().filter_map(|i| i.as_video().map(|v| v.id.clone())).collect();
-                            items.extend(p.items.into_iter().filter(|i| i.as_video().map(|v| !seen.contains(&v.id)).unwrap_or(true)));
+                            let mut seen: std::collections::HashSet<String> = items.iter().filter_map(|i| i.as_video().map(|v| v.id.clone())).collect();
+                            items.extend(p.items.into_iter().filter(|i| i.as_video().map(|v| seen.insert(v.id.clone())).unwrap_or(true)));
                         }
                         this.continuation = p.continuation;
                     }

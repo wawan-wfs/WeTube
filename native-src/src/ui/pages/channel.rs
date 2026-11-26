@@ -98,6 +98,7 @@ impl ChannelPage {
         self.searching = None;
         self.tab_items = Load::Loading;
         self.continuation = None;
+        self.loading_more = false;
         self.serial += 1;
         let serial = self.serial;
         let id = self.id.clone();
@@ -125,6 +126,7 @@ impl ChannelPage {
         self.searching = Some(q.clone());
         self.tab_items = Load::Loading;
         self.continuation = None;
+        self.loading_more = false;
         self.serial += 1;
         let serial = self.serial;
         let id = self.id.clone();
@@ -154,9 +156,11 @@ impl ChannelPage {
             return;
         };
         let info = self.data.ready().map(|d| d.info.clone());
+        let serial = self.serial;
         cx.spawn(async move |this, cx| {
             let res = blocking(move || innertube::browse_continue(&tok)).await;
             let _ = this.update(cx, |this, cx| {
+                if this.serial != serial { return; }
                 this.loading_more = false;
                 match res {
                     Ok(mut p) => {
@@ -171,7 +175,8 @@ impl ChannelPage {
                             }
                         }
                         if let Some(items) = this.tab_items.ready_mut() {
-                            items.extend(p.items);
+                            let mut seen: std::collections::HashSet<String> = items.iter().filter_map(|i| i.as_video().map(|v| v.id.clone())).collect();
+                            items.extend(p.items.into_iter().filter(|i| i.as_video().map(|v| seen.insert(v.id.clone())).unwrap_or(true)));
                         }
                         this.continuation = p.continuation;
                     }

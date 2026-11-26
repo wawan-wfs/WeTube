@@ -149,6 +149,7 @@ impl HomePage {
     fn load(&mut self, cx: &mut Context<Self>) {
         self.items = Load::Loading;
         self.continuation = None;
+        self.loading_more = false;
         self.serial += 1;
         let serial = self.serial;
         let chip = self.chip;
@@ -289,6 +290,7 @@ impl HomePage {
             self.loading_more = false;
             return;
         };
+        let serial = self.serial;
         cx.spawn(async move |this, cx| {
             let res = blocking(move || {
                 if let Some(t) = tok.strip_prefix(WEB) {
@@ -307,10 +309,12 @@ impl HomePage {
             })
             .await;
             let _ = this.update(cx, |this, cx| {
+                if this.serial != serial { return; }
                 this.loading_more = false;
                 if let Ok(p) = res {
                     if let Some(items) = this.items.ready_mut() {
-                        items.extend(p.items);
+                        let mut seen: std::collections::HashSet<String> = items.iter().filter_map(|i| i.as_video().map(|v| v.id.clone())).collect();
+                        items.extend(p.items.into_iter().filter(|i| i.as_video().map(|v| seen.insert(v.id.clone())).unwrap_or(true)));
                     }
                     this.continuation = p.continuation;
                 } else {

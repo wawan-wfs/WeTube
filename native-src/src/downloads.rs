@@ -369,21 +369,43 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
         let mut child = cmd.spawn()?;
         progress(0.0, "Getting video info…");
         let stdout = child.stdout.take().unwrap();
-        // drain stderr on its own thread so a chatty yt-dlp can't block on a full pipe
+        // Drain both pipes concurrently; cancellation must not depend on a progress line.
         let stderr = child.stderr.take().unwrap();
-        let err_reader = std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut s);
-            s
+        let (err_tx, err_rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut r = BufReader::new(stderr);
+            let mut tail = Vec::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = r.read(&mut buf) {
+                if n == 0 { break; }
+                tail.extend_from_slice(&buf[..n]);
+                if tail.len() > 65536 { tail.drain(..tail.len()-65536); }
+            }
+            let _ = err_tx.send(String::from_utf8_lossy(&tail).into_owned());
         });
+        let (line_tx, line_rx) = std::sync::mpsc::sync_channel(32);
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line_tx.send(line).is_err() { break; }
+            }
+        });
+        let mut last_output = std::time::Instant::now();
         let mut final_path = String::new();
         // video and audio arrive one after the other: weight them 90 / 10
         let (mut phase, mut last_pct) = (0u32, 0.0f32);
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if cancel.load(Ordering::SeqCst) {
+        loop {
+            if cancel.load(Ordering::SeqCst) || last_output.elapsed() > std::time::Duration::from_secs(600) {
                 let _ = child.kill();
-                anyhow::bail!("cancelled");
+                let _ = child.wait();
+                if cancel.load(Ordering::SeqCst) { anyhow::bail!("cancelled"); }
+                anyhow::bail!("Download tool idle timeout");
             }
+            let line = match line_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(line) => { last_output = std::time::Instant::now(); line }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            };
             if let Some(rest) = line.strip_prefix("[dl]") {
                 let mut parts = rest.trim().split('|');
                 let pct = parts.next().and_then(|p| p.trim().trim_end_matches('%').parse::<f32>().ok()).unwrap_or(0.0);
@@ -401,8 +423,17 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
                 final_path = line.trim().to_string();
             }
         }
-        let status = child.wait()?;
-        let err = err_reader.join().unwrap_or_default();
+        let status = loop {
+            if cancel.load(Ordering::SeqCst) || last_output.elapsed() > std::time::Duration::from_secs(600) {
+                let _ = child.kill();
+                let _ = child.wait();
+                if cancel.load(Ordering::SeqCst) { anyhow::bail!("cancelled"); }
+                anyhow::bail!("Download tool exit timeout");
+            }
+            if let Some(status) = child.try_wait()? { break status; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        let err = err_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap_or_default();
         if !status.success() {
             anyhow::bail!("{}", ytdlp_failure(status.code(), &err));
         }
@@ -474,8 +505,7 @@ fn native_download(job: &Job, dir: &std::path::Path, cancel: &AtomicBool, progre
     })();
     drop(f);
     let result = result.and_then(|_| {
-        // Atomic non-overwriting commit on filesystems supporting hard links.
-        std::fs::hard_link(&partial, &path)?;
+        commit_download(&partial, &path)?;
         verify_output(dir, &path.to_string_lossy())
     });
     let _ = std::fs::remove_file(&partial);
@@ -681,6 +711,26 @@ pub fn resolve_output(path: &str, video_id: &str) -> Option<String> {
         .filter_map(|e| Some((e.metadata().ok()?.len(), e.path())))
         .max_by_key(|(len, _)| *len)
         .map(|(_, p)| p.to_string_lossy().into_owned())
+}
+
+/// Windows MoveFileExW with flags=0 refuses replacement, including on FAT/exFAT.
+/// Non-Windows fallback uses a same-directory hard link.
+#[cfg(windows)]
+fn commit_download(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" { fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32; }
+    let src = std::fs::canonicalize(from)?;
+    let parent = std::fs::canonicalize(to.parent().ok_or_else(|| std::io::Error::other("Missing destination parent"))?)?;
+    let dst = parent.join(to.file_name().ok_or_else(|| std::io::Error::other("Missing destination filename"))?);
+    let src: Vec<u16> = src.as_os_str().encode_wide().chain(Some(0)).collect();
+    let dst: Vec<u16> = dst.as_os_str().encode_wide().chain(Some(0)).collect();
+    // Both buffers are NUL-terminated and live for the duration of the call.
+    if unsafe { MoveFileExW(src.as_ptr(), dst.as_ptr(), 0) } == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+}
+#[cfg(not(windows))]
+fn commit_download(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::hard_link(from,to)
 }
 
 /// Require a nonempty regular file contained by the selected directory.

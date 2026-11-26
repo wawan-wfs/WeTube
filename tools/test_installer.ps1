@@ -25,11 +25,28 @@ try {
     $exeSha = (Get-FileHash $exe -Algorithm SHA256).Hash
     $buildSha = (Get-FileHash native-src/target/release/wetube.exe -Algorithm SHA256).Hash
     if ($exeSha -ne $buildSha) { throw 'Installed executable hash mismatch' }
-    $vi = (Get-Item -LiteralPath $exe).VersionInfo
-    if ($vi.ProductName -ne 'WeTube Desktop by WFS Project' -or $vi.FileDescription -ne 'WeTube Desktop by WFS Project' -or $vi.CompanyName -ne 'WFS Project') { throw 'Installed executable branding metadata mismatch' }
-    $si = $setup.VersionInfo
-    if ($si.ProductName -ne 'WeTube Desktop by WFS Project' -or $si.CompanyName -ne 'WFS Project') { throw 'Installer branding metadata mismatch' }
-    @{status='PASS'; exe_product=$vi.ProductName; exe_description=$vi.FileDescription; exe_company=$vi.CompanyName; setup_product=$si.ProductName; setup_company=$si.CompanyName} | ConvertTo-Json | Set-Content (Join-Path $evidence 'branding.json')
+    # Inno Setup pads fixed-width version-resource strings with trailing spaces.
+    # Do not normalize internal characters, case, prefixes or leading whitespace.
+    function Normalize-ResourceValue([string]$value) {
+        return $value.TrimEnd([char[]]@([char]32, [char]0))
+    }
+    $brand = 'WeTube Desktop by WFS Project'
+    $company = 'WFS Project'
+    $vi = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
+    $si = [Diagnostics.FileVersionInfo]::GetVersionInfo($setup.FullName)
+    $raw = [ordered]@{
+        exe_product=$vi.ProductName; exe_description=$vi.FileDescription; exe_company=$vi.CompanyName
+        setup_product=$si.ProductName; setup_description=$si.FileDescription; setup_company=$si.CompanyName
+    }
+    $raw | ConvertTo-Json | Set-Content (Join-Path $evidence 'branding-raw.json')
+    $norm = [ordered]@{}
+    foreach ($key in $raw.Keys) { $norm[$key] = Normalize-ResourceValue $raw[$key] }
+    $exeOk = ($norm.exe_product -ceq $brand -and $norm.exe_description -ceq $brand -and $norm.exe_company -ceq $company)
+    $setupOk = ($norm.setup_product -ceq $brand -and $norm.setup_description -ceq $brand -and $norm.setup_company -ceq $company)
+    $norm.status = if ($exeOk -and $setupOk) { 'PASS' } else { 'FAIL' }
+    $norm | ConvertTo-Json | Set-Content (Join-Path $evidence 'branding.json')
+    if (!$exeOk) { throw 'Installed executable branding metadata mismatch; see branding-raw.json' }
+    if (!$setupOk) { throw 'Installer branding metadata mismatch; see branding-raw.json' }
     $fixture = Join-Path $evidence 'local.ppm'
     $header = [Text.Encoding]::ASCII.GetBytes(('P6' + [char]10 + '160 90' + [char]10 + '255' + [char]10))
     $pixels = [byte[]]::new(160 * 90 * 3)

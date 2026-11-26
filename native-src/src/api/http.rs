@@ -130,7 +130,18 @@ pub fn download_resumable(url:&str,partial:&std::path::Path,key:&str,itag:u32,
     progress:impl FnMut(u64,Option<u64>)->bool)->Result<()> {
     let prior=crate::store::wetube_kv_read(key)?.filter(|s|!s.is_empty())
         .map(|s|serde_json::from_str::<crate::wetube_resume::Validator>(&s)).transpose()?;
-    transfer_resumable(agent(),url,partial,itag,prior,|v| {
+    // Long downloads use a separate agent: metadata requests retain their 30s deadline.
+    let mut cfg=ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(6*3600)))
+        .timeout_recv_body(Some(Duration::from_secs(6*3600)))
+        .timeout_connect(Some(Duration::from_secs(20)))
+        .http_status_as_error(false)
+        .ip_family(crate::store::ip_family()).user_agent(BROWSER_UA);
+    if let Some(p)=crate::store::proxy_setting() {
+        if let Ok(proxy)=ureq::Proxy::new(&p){cfg=cfg.proxy(Some(proxy));}
+    }
+    let media:ureq::Agent=cfg.build().into();
+    transfer_resumable(&media,url,partial,itag,prior,|v| {
         let data=match v {Some(v)=>serde_json::to_string(v)?,None=>String::new()};
         anyhow::ensure!(crate::store::wetube_kv_set(key,&data),"Could not persist media checkpoint");
         Ok(())

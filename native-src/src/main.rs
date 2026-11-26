@@ -21,6 +21,7 @@ mod wetube_runtime;
 mod wetube_recovery;
 mod wetube_process;
 mod wetube_resume;
+mod wetube_publish;
 
 pub(crate) const PRODUCT_NAME: &str = "WeTube Desktop";
 pub(crate) const PRODUCT_CREDIT: &str = "by WFS Project";

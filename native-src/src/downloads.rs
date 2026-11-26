@@ -236,7 +236,13 @@ fn spawn_job(job: Job, jobs: Arc<Mutex<Vec<Job>>>) {
             }
             Err(e) => update(&|j| j.status = JobStatus::Failed(e.to_string())),
         }
-        if !persist_history(&jobs2.lock()) { eprintln!("WeTube download journal: terminal state write failed"); }
+        if persist_history(&jobs2.lock()) {
+            let done=jobs2.lock().iter().any(|j|j.id==jid&&matches!(j.status,JobStatus::Done(_)));
+            if done {
+                crate::wetube_publish::forget(&job.durable_id);
+                let _=store::wetube_kv_set(&format!("wetube_resume_{}",job.durable_id),"");
+            }
+        } else {eprintln!("WeTube download journal: terminal state write failed");}
     });
 }
 
@@ -314,7 +320,7 @@ pub fn discard_partial(id:u64,cx:&mut App) {
     match result {Ok(())=>toast(cx,"Native partial cleared. yt-dlp staging files are retained."),Err(e)=>toast(cx,e.to_string())}
 }
 fn new_durable_id() -> String { format!("{:032x}",rand::random::<u128>()) }
-fn valid_durable_id(id:&str)->bool { id.len()==32 && id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) }
+pub(crate) fn valid_durable_id(id:&str)->bool { id.len()==32 && id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) }
 
 fn ensure_ticking(cx: &mut App) {
     if cx.default_global::<Downloads>().ticking {
@@ -361,6 +367,7 @@ fn run_job(job: &Job, cancel: &AtomicBool, progress: &dyn Fn(f32, &str)) -> anyh
     let dir = std::path::PathBuf::from(&job.directory);
     std::fs::create_dir_all(&dir)?;
     anyhow::ensure!(crate::wetube_session::valid_id(&job.video.id) && valid_durable_id(&job.durable_id),"Invalid job identity");
+    if let Some(path)=crate::wetube_publish::recover(job,&dir,cancel)? {return Ok(path);}
     let url = format!("https://www.youtube.com/watch?v={}", job.video.id);
     if let Some(bin) = streams::ytdlp_path() {
         let fmt = match job.format.as_str() {
@@ -377,11 +384,7 @@ fn run_job(job: &Job, cancel: &AtomicBool, progress: &dyn Fn(f32, &str)) -> anyh
         let source = std::path::PathBuf::from(verify_output(&stage,&output)?);
         let name=source.file_name().ok_or_else(||anyhow::anyhow!("Missing output filename"))?;
         let target=dir.join(name);
-        commit_download(&source,&target)?;
-        #[cfg(not(windows))]
-        let _=std::fs::remove_file(&source);
-        let _=std::fs::remove_dir(&stage);
-        return verify_output(&dir,&target.to_string_lossy());
+        return crate::wetube_publish::publish(job,&dir,&source,&target,cancel);
     }
     anyhow::ensure!(job.format=="audio" || job.format=="single","yt-dlp is required for this format");
     native_download(job, &dir, cancel, progress)
@@ -457,15 +460,16 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
                 if line_tx.send(line).is_err() { break; }
             }
         });
-        let mut last_output = std::time::Instant::now();
+        let started=std::time::Instant::now();
+        let mut last_output = started;
         let mut final_path = String::new();
         // video and audio arrive one after the other: weight them 90 / 10
         let (mut phase, mut last_pct) = (0u32, 0.0f32);
         loop {
-            if cancel.load(Ordering::SeqCst) || last_output.elapsed() > std::time::Duration::from_secs(600) {
+            if cancel.load(Ordering::SeqCst) || last_output.elapsed() > std::time::Duration::from_secs(600) || started.elapsed()>std::time::Duration::from_secs(6*3600) {
                 child.terminate();
                 if cancel.load(Ordering::SeqCst) { anyhow::bail!("cancelled"); }
-                anyhow::bail!("Download tool idle timeout");
+                anyhow::bail!("Download tool idle or total timeout");
             }
             let line = match line_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(line) => { last_output = std::time::Instant::now(); line }
@@ -490,7 +494,7 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
             }
         }
         let status = loop {
-            if cancel.load(Ordering::SeqCst) || last_output.elapsed() > std::time::Duration::from_secs(600) {
+            if cancel.load(Ordering::SeqCst) || last_output.elapsed() > std::time::Duration::from_secs(600) || started.elapsed()>std::time::Duration::from_secs(6*3600) {
                 child.terminate();
                 if cancel.load(Ordering::SeqCst) { anyhow::bail!("cancelled"); }
                 anyhow::bail!("Download tool exit timeout");
@@ -564,10 +568,7 @@ fn native_download(job: &Job, dir: &std::path::Path, cancel: &AtomicBool, progre
         !cancel.load(Ordering::SeqCst)
     })?;
     anyhow::ensure!(!cancel.load(Ordering::SeqCst),"cancelled");
-    commit_download(&partial,&path)?;
-    let _=std::fs::remove_file(&partial);
-    let _=store::wetube_kv_set(&key,"");
-    verify_output(dir,&path.to_string_lossy())
+    crate::wetube_publish::publish(job,dir,&partial,&path,cancel)
 }
 
 pub fn cancel(id: u64, cx: &mut App) {
@@ -587,7 +588,7 @@ pub fn open_external_at(id: &str, time: f64, cx: &mut App) {
     cx.spawn(async move |cx| {
         let res = crate::ui::blocking(move || launch_external(&id, time, &custom)).await;
         let _ = cx.update(|cx| match res {
-            Ok(name) => toast(cx, format!("Playing in {name}. Keep Stream Tube open while it plays")),
+            Ok(name) => toast(cx, format!("Playing in {name}. Keep WeTube Desktop by WFS Project open while it plays")),
             Err(e) => toast(cx, format!("Couldn't open a video player: {e}")),
         });
     })
@@ -778,7 +779,7 @@ pub fn resolve_output(path: &str, video_id: &str) -> Option<String> {
 /// Windows MoveFileExW with flags=0 refuses replacement, including on FAT/exFAT.
 /// Non-Windows fallback uses a same-directory hard link.
 #[cfg(windows)]
-fn commit_download(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+pub(crate) fn commit_download(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     unsafe extern "system" { fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32; }
@@ -791,7 +792,7 @@ fn commit_download(from: &std::path::Path, to: &std::path::Path) -> std::io::Res
     if unsafe { MoveFileExW(src.as_ptr(), dst.as_ptr(), 0) } == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
 }
 #[cfg(not(windows))]
-fn commit_download(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+pub(crate) fn commit_download(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     std::fs::hard_link(from,to)
 }
 
@@ -925,9 +926,8 @@ fn restore_status(s: &Saved) -> JobStatus {
     else { JobStatus::Failed(s.error.clone().unwrap_or_else(|| "Download failed".into())) }
 }
 fn persist_history(jobs: &[Job]) -> bool {
-    let saved: Vec<_> = jobs.iter().map(saved_job).collect();
-    serde_json::to_string(&saved).ok().filter(|s| s.len() <= HISTORY_LIMIT)
-        .is_some_and(|s| store::wetube_kv_set(HISTORY_KEY, &s))
+    let rows: anyhow::Result<Vec<_>>=jobs.iter().map(|j|Ok((j.durable_id.clone(),serde_json::to_string(&saved_job(j))?))).collect();
+    rows.and_then(|r|store::write_download_rows(&r)).is_ok()
 }
 fn save_history(cx: &mut App) {
     let ok = {
@@ -944,14 +944,18 @@ pub fn load_history(cx: &mut App) {
     let d = cx.default_global::<Downloads>();
     if d.history_loaded { return; }
     d.history_loaded = true;
-    let raw = match store::wetube_kv_read_bounded(HISTORY_KEY,HISTORY_LIMIT) {
-        Ok(Some(raw))=>raw,
-        Ok(None)=>return,
-        Err(_)=>{ d.history_blocked=true; return; }
-    };
-    let Ok(saved) = serde_json::from_str::<Vec<Saved>>(&raw) else {
-        d.history_blocked = true; return;
-    };
+    let loaded=(||->anyhow::Result<Vec<Saved>>{
+        if let Some(rows)=store::download_rows()? {
+            return rows.into_iter().map(|(id,raw)| {
+                let s:Saved=serde_json::from_str(&raw)?;
+                anyhow::ensure!(s.durable_id==id,"Download journal identity mismatch");
+                Ok(s)
+            }).collect();
+        }
+        let Some(raw)=store::wetube_kv_read_bounded(HISTORY_KEY,HISTORY_LIMIT)? else{return Ok(Vec::new());};
+        Ok(serde_json::from_str(&raw)?)
+    })();
+    let Ok(saved)=loaded else{d.history_blocked=true;return;};
     let mut identities=std::collections::HashSet::new();
     if saved.iter().any(|s| !crate::wetube_session::valid_id(&s.video.id) || (!s.durable_id.is_empty() && (!valid_durable_id(&s.durable_id) || !identities.insert(s.durable_id.clone())))) {
         d.history_blocked=true; return;

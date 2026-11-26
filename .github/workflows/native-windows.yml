@@ -1,5 +1,7 @@
 name: WeTube Native Windows gate
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read

@@ -600,7 +600,9 @@ impl Render for ShortsPage {
             return div().size_full().child(if self.loading { spinner(cx).into_any_element() } else { empty_state("zap", "No Shorts found", "", cx).into_any_element() }).into_any_element();
         }
         let v = self.list[self.idx].clone();
-        let available_w = (ui.viewport.width - px(128.)).max(px(140.));
+        // Comments occupy horizontal space; keep the video within the viewport.
+        let reserved = if self.show_comments { px(460.) } else { px(128.) };
+        let available_w = (ui.viewport.width - reserved).max(px(140.));
         let h = (ui.viewport.height - px(56. + 32.)).max(px(160.)).min(available_w * (16. / 9.));
         let w = h * (9. / 16.);
         let votes = self.votes.get(&v.id).cloned();

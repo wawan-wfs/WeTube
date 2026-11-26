@@ -566,7 +566,8 @@ pub fn wetube_kv_read_bounded(key: &str, limit: usize) -> Result<Option<String>>
 }
 fn read_bounded_kv(conn: &Connection, key: &str, limit: usize) -> Result<Option<String>> {
     anyhow::ensure!((1..=16 * 1024 * 1024).contains(&limit), "Invalid local state size limit");
-    let outer_limit = (limit * 2 + 2) as i64;
+    // JSON escaping can expand a single control byte into six characters.
+    let outer_limit = (limit * 6 + 2) as i64;
     let row: Option<(i64, Option<String>)> = conn.query_row(
         "SELECT length(CAST(value AS BLOB)), CASE WHEN length(CAST(value AS BLOB))<=?2 THEN value ELSE NULL END FROM kv WHERE key=?1",
         params![key,outer_limit], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;

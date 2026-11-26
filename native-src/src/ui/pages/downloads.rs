@@ -77,7 +77,8 @@ impl Render for DownloadsPage {
                             .when(running, |d| {
                                 d.child(div().w_full().h(px(4.)).rounded_full().bg(p.hover).child(div().h_full().rounded_full().w(relative(j.progress.clamp(0.0, 1.0))).bg(p.accent)))
                             })
-                            .child(div().text_xs().text_color(color).truncate().child(status)),
+                            .child(div().text_xs().text_color(color).truncate().child(status))
+                            .when(!j.directory.is_empty(), |d| d.child(div().text_xs().text_color(p.text3).truncate().child(format!("Folder: {}",j.directory)))),
                     )
                     .when(running, |d| d.child(pill(SharedString::from(format!("dlc-{id}")), Some("x"), "Cancel", cx).on_click(move |_, _, cx| crate::downloads::cancel(id, cx))))
                     .when_some(done_path, |d, path| {
@@ -87,6 +88,7 @@ impl Render for DownloadsPage {
                             .child(icon_button(SharedString::from(format!("dld-{id}")), "trash-2", cx).on_click(move |_, window, cx| crate::ui::app::confirm("Delete downloaded file?", "This permanently removes the selected file from disk.", "Delete file", window, cx, move |_, cx| crate::downloads::delete_file(id, cx))))
                     })
                     .when(matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled), |d| d.child(pill(SharedString::from(format!("retry-{id}")), Some("refresh-cw"), "Retry", cx).on_click(move |_, _, cx| crate::downloads::retry(id, cx))))
+                    .when(matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled), |d| d.child(pill(SharedString::from(format!("restart-{id}")), Some("rotate-ccw"), "Start over", cx).on_click(move |_,window,cx| crate::ui::app::confirm("Start a new transfer?", "Existing partial files will remain in the original folder. The next attempt starts from zero.", "Start over", window,cx,move |_,cx| crate::downloads::restart(id,cx)))))
                     .when(!running, |d| d.child(icon_button(SharedString::from(format!("dlr-{id}")), "x", cx).on_click(move |_, _, cx| crate::downloads::remove(id, cx)))),
             );
         }
@@ -110,6 +112,8 @@ impl Render for DownloadsPage {
                         div()
                             .flex()
                             .items_center()
+                            .flex_wrap()
+                            .gap_3()
                             .justify_between()
                             .child(workspace_header("Downloads", "Manage active, finished and interrupted downloads", "download", cx))
                             .child(

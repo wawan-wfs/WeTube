@@ -273,6 +273,21 @@ pub fn retry(id: u64, cx: &mut App) {
         Err(e)=>toast(cx,e.to_string()),
     }
 }
+/// Explicit clean retry: use a new durable identity, leaving old partial data
+/// untouched for user recovery or manual cleanup. Never delete unknown files.
+pub fn restart(id:u64,cx:&mut App) {
+    if history_blocked(cx) {toast(cx,"Download journal is unreadable");return;}
+    let jobs=cx.default_global::<Downloads>().jobs.clone();
+    let ok={
+        let mut list=jobs.lock();
+        if let Some(i)=list.iter().position(|j|j.id==id && matches!(j.status,JobStatus::Failed(_)|JobStatus::Cancelled)) {
+            let old=list[i].durable_id.clone();
+            list[i].durable_id=new_durable_id();
+            if persist_history(&list) {true} else {list[i].durable_id=old;false}
+        }else{false}
+    };
+    if ok { retry(id,cx); }else{toast(cx,"Could not persist clean retry");}
+}
 fn new_durable_id() -> String { format!("{:032x}",rand::random::<u128>()) }
 fn valid_durable_id(id:&str)->bool { id.len()==32 && id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) }
 
@@ -330,7 +345,18 @@ fn run_job(job: &Job, cancel: &AtomicBool, progress: &dyn Fn(f32, &str)) -> anyh
             "best" => "bv*+ba/b".to_string(),
             h => format!("bv*[height<={h}]+ba/b[height<={h}]/b"),
         };
-        return ytdlp_run(&bin, &dir, &url, &fmt, &s, &[], None, cancel, progress);
+        // Stable per-job staging isolates yt-dlp .part files and merge outputs.
+        let stage = job_stage(&dir, &job.durable_id)?;
+        let output = ytdlp_run(&bin, &stage, &url, &fmt, &s, &[], None, cancel, progress)?;
+        anyhow::ensure!(!cancel.load(Ordering::SeqCst),"cancelled");
+        let source = std::path::PathBuf::from(verify_output(&stage,&output)?);
+        let name=source.file_name().ok_or_else(||anyhow::anyhow!("Missing output filename"))?;
+        let target=dir.join(name);
+        commit_download(&source,&target)?;
+        #[cfg(not(windows))]
+        let _=std::fs::remove_file(&source);
+        let _=std::fs::remove_dir(&stage);
+        return verify_output(&dir,&target.to_string_lossy());
     }
     anyhow::ensure!(job.format=="audio" || job.format=="single","yt-dlp is required for this format");
     native_download(job, &dir, cancel, progress)
@@ -681,11 +707,15 @@ pub fn clear_history(cx: &mut App) {
 
 /// Deletes the downloaded file and removes the entry.
 pub fn delete_file(id: u64, cx: &mut App) {
-    let path = cx.default_global::<Downloads>().jobs.lock().iter().find(|j| j.id == id).and_then(|j| match &j.status {
-        JobStatus::Done(p) => Some(p.clone()),
+    let entry = cx.default_global::<Downloads>().jobs.lock().iter().find(|j| j.id == id).and_then(|j| match &j.status {
+        JobStatus::Done(p) => Some((j.directory.clone(),p.clone())),
         _ => None,
     });
-    if let Some(p) = path {
+    if let Some((dir,p)) = entry {
+        if dir.is_empty() { toast(cx,"Legacy download has no pinned folder; remove the list entry or delete the file yourself."); return; }
+        if std::path::Path::new(&p).exists() && verify_output(std::path::Path::new(&dir),&p).is_err() {
+            toast(cx,"File no longer belongs to the original download folder"); return;
+        }
         match std::fs::remove_file(&p) {
             Ok(()) => toast(cx, "Deleted from disk"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -740,9 +770,28 @@ fn commit_download(from: &std::path::Path, to: &std::path::Path) -> std::io::Res
     std::fs::hard_link(from,to)
 }
 
+/// Staging must remain under the pinned destination; reject symbolic links and junction escapes.
+fn job_stage(dir:&std::path::Path,id:&str)->anyhow::Result<std::path::PathBuf> {
+    anyhow::ensure!(valid_durable_id(id),"Invalid job identity");
+    let path=dir.join(format!(".wetube-job-{id}"));
+    match std::fs::create_dir(&path) {
+        Ok(())=>{},
+        Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},
+        Err(e)=>return Err(e.into()),
+    }
+    let meta=std::fs::symlink_metadata(&path)?;
+    anyhow::ensure!(meta.is_dir() && !meta.file_type().is_symlink(),"Unsafe staging directory");
+    let root=std::fs::canonicalize(dir)?;
+    let resolved=std::fs::canonicalize(&path)?;
+    anyhow::ensure!(resolved.parent()==Some(root.as_path()),"Staging directory outside pinned destination");
+    Ok(path)
+}
+
 /// Require a nonempty regular file contained by the selected directory.
 fn verify_output(dir: &std::path::Path, path: &str) -> anyhow::Result<String> {
     let root = std::fs::canonicalize(dir)?;
+    let link=std::fs::symlink_metadata(path)?;
+    anyhow::ensure!(link.is_file() && !link.file_type().is_symlink(),"Output is not a regular file");
     let full = std::fs::canonicalize(path)?;
     anyhow::ensure!(full.starts_with(&root) && full != root, "Output is outside the download directory");
     let meta = std::fs::metadata(&full)?;

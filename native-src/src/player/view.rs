@@ -391,7 +391,9 @@ impl Render for PlayerView {
                     .p_6()
                     .bg(hsla(0., 0., 0., 0.85))
                     .child(icon("circle-alert").size_10().text_color(white()))
+                    .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(white()).text_center().child("Playback interrupted"))
                     .child(div().text_color(white()).text_center().max_w(px(560.)).text_sm().child(crate::ui::friendly_error(&e)))
+                    .child(div().text_xs().text_center().text_color(white().opacity(0.7)).max_w(px(500.)).child("Retry resumes the current video position. If access is refused, check availability on the official site."))
                     .when(!mini, |d| {
                         d.child(
                             div()

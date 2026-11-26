@@ -78,6 +78,55 @@ try {
         if ($window -eq [IntPtr]::Zero) { throw 'No native window within 30 seconds' }
         if ($gui.MainWindowTitle -notlike '*WeTube Desktop by WFS Project*') { throw 'Native window title branding mismatch' }
         @{status='PASS'; window_handle=$window.ToInt64(); title=$gui.MainWindowTitle; scope='native window created; no interaction or YouTube playback verified'} | ConvertTo-Json | Set-Content (Join-Path $evidence 'gui-startup.json')
+        # Optional screenshot evidence of the actual foreground native window.
+        # A headless/occluded desktop is NOT TESTED, never substituted by a fixture.
+        $shot = [ordered]@{status='NOT TESTED'; scope='actual visible window capture only; not visual acceptance'}
+        try {
+            Add-Type -AssemblyName System.Drawing
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class WetubeWindowEvidence {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+}
+'@
+            Start-Sleep -Milliseconds 1200
+            $rect = New-Object 'WetubeWindowEvidence+RECT'
+            if (![WetubeWindowEvidence]::IsWindowVisible($window) -or [WetubeWindowEvidence]::GetForegroundWindow() -ne $window) { throw 'Native window is not visible and foreground' }
+            if (![WetubeWindowEvidence]::GetWindowRect($window, [ref]$rect)) { throw 'Could not read native bounds' }
+            $width = $rect.Right - $rect.Left
+            $height = $rect.Bottom - $rect.Top
+            if ($width -lt 320 -or $height -lt 200 -or $width -gt 7680 -or $height -gt 4320) { throw 'Invalid capture dimensions' }
+            $bitmap = [Drawing.Bitmap]::new($width, $height)
+            try {
+                $graphics = [Drawing.Graphics]::FromImage($bitmap)
+                try {
+                    $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
+                } finally { $graphics.Dispose() }
+                if ([WetubeWindowEvidence]::GetForegroundWindow() -ne $window) { throw 'Foreground changed during capture' }
+                $colors = [System.Collections.Generic.HashSet[int]]::new()
+                for ($y=0; $y -lt $height; $y += [Math]::Max(1,[int]($height/16))) {
+                    for ($x=0; $x -lt $width; $x += [Math]::Max(1,[int]($width/16))) {
+                        [void]$colors.Add($bitmap.GetPixel($x,$y).ToArgb())
+                    }
+                }
+                if ($colors.Count -lt 8) { throw 'Capture is uniform or has insufficient visible content' }
+                $png = Join-Path $evidence 'native-window.png'
+                $bitmap.Save($png, [Drawing.Imaging.ImageFormat]::Png)
+                $shot.status = 'CAPTURED'
+                $shot.width = $width; $shot.height = $height
+                $shot.sha256 = (Get-FileHash -LiteralPath $png -Algorithm SHA256).Hash
+            } finally { $bitmap.Dispose() }
+        } catch {
+            $shot.reason = $_.Exception.Message
+        } finally {
+            $shot | ConvertTo-Json | Set-Content (Join-Path $evidence 'screenshot.json')
+        }
+
     } finally {
         if (!$gui.HasExited) {
             $null = $gui.CloseMainWindow()

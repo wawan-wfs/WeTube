@@ -589,6 +589,17 @@ pub fn download_rows()->Result<Option<Vec<(String,String)>>> {
 pub fn write_download_rows(rows:&[(String,String)])->Result<()> {
     write_download_rows_to(&mut db().lock(),rows)
 }
+/// Worker state transitions only touch the existing row. A missing row is an
+/// error: a late worker must not resurrect a deleted or restarted job.
+pub fn update_download_row(id:&str,payload:&str)->Result<()> {
+    update_download_row_in(&db().lock(),id,payload)
+}
+fn update_download_row_in(c:&Connection,id:&str,payload:&str)->Result<()> {
+    anyhow::ensure!(payload.len()<=JOB_ROW_LIMIT,"Oversized download row");
+    let changed=c.execute("UPDATE wetube_download_jobs SET json=?2 WHERE job_id=?1",params![id,payload])?;
+    anyhow::ensure!(changed==1,"Download job not found in journal");
+    Ok(())
+}
 fn write_download_rows_to(c:&mut Connection,rows:&[(String,String)])->Result<()> {
     anyhow::ensure!(rows.len()<=JOB_COUNT_LIMIT,"Download journal is full");
     let tx=c.transaction()?;
@@ -621,6 +632,10 @@ mod download_row_tests {
         assert!(write_download_rows_to(&mut c,&[(a.clone(),"changed".into()),(a.clone(),"duplicate".into())]).is_err());
         let old:String=c.query_row("SELECT json FROM wetube_download_jobs WHERE job_id=?1",[&a],|r|r.get(0)).unwrap();
         assert_eq!(old,"one");
+        update_download_row_in(&c,&a,"new").unwrap();
+        assert!(update_download_row_in(&c,&"c".repeat(32),"missing").is_err());
+        let unchanged:String=c.query_row("SELECT json FROM wetube_download_jobs WHERE job_id=?1",[&b],|r|r.get(0)).unwrap();
+        assert_eq!(unchanged,"two");
         write_download_rows_to(&mut c,&[]).unwrap();
         let count:i64=c.query_row("SELECT COUNT(*) FROM wetube_download_jobs",[],|r|r.get(0)).unwrap();
         let marker:i64=c.query_row("SELECT COUNT(*) FROM kv WHERE key=?1",[JOB_JOURNAL_MARKER],|r|r.get(0)).unwrap();

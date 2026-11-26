@@ -205,18 +205,31 @@ fn spawn_job(job: Job, jobs: Arc<Mutex<Vec<Job>>>) {
     let jobs2 = jobs.clone();
     std::thread::spawn(move || {
         let update = |f: &dyn Fn(&mut Job)| {
-            if let Some(j) = jobs2.lock().iter_mut().find(|j| j.id == jid) {
+            if let Some(j) = jobs2.lock().iter_mut().find(|j| j.id == jid && j.durable_id==job.durable_id) {
                 f(j);
             }
         };
         // at most 3 downloads at a time; the rest wait their turn
         loop {
             if cancel.load(Ordering::SeqCst) {
-                update(&|j| j.status = JobStatus::Cancelled);
-                let _ = persist_history(&jobs2.lock());
+                let mut list=jobs2.lock();
+                if let Some(j)=list.iter_mut().find(|j|j.id==jid&&j.durable_id==job.durable_id) {
+                    j.status=JobStatus::Cancelled;
+                    if !persist_job(j){eprintln!("WeTube download journal: cancellation write failed");}
+                }
                 return;
             }
-            if claim_download_slot(&mut jobs2.lock(), jid) { break; }
+            {
+                let mut list=jobs2.lock();
+                if claim_download_slot(&mut list,jid) {
+                    let Some(j)=list.iter_mut().find(|j|j.id==jid&&j.durable_id==job.durable_id)else{return;};
+                    if !persist_job(j) {
+                        j.status=JobStatus::Failed("Could not persist running state; transfer not started".into());
+                        return;
+                    }
+                    break;
+                }
+            }
             std::thread::sleep(std::time::Duration::from_millis(400));
         }
         let res = run_job(&job, &cancel, &|p, detail| {
@@ -225,24 +238,25 @@ fn spawn_job(job: Job, jobs: Arc<Mutex<Vec<Job>>>) {
                 j.detail = detail.chars().filter(|c| !c.is_control()).take(240).collect();
             })
         });
-        match res {
-            Ok(path) => update(&|j| {
-                j.status = JobStatus::Done(path.clone());
-                j.progress = 1.0;
-            }),
-            Err(e) if cancel.load(Ordering::SeqCst) => {
-                let _ = e;
-                update(&|j| j.status = JobStatus::Cancelled)
+        // Update memory and durable row under the same lock; the UI cannot
+        // retry/remove this entry between the terminal transition and commit.
+        let mut list=jobs2.lock();
+        if let Some(j)=list.iter_mut().find(|j|j.id==jid&&j.durable_id==job.durable_id) {
+            match res {
+                Ok(path)=>{j.status=JobStatus::Done(path);j.progress=1.0;}
+                Err(_) if cancel.load(Ordering::SeqCst)=>j.status=JobStatus::Cancelled,
+                Err(e)=>j.status=JobStatus::Failed(e.to_string()),
             }
-            Err(e) => update(&|j| j.status = JobStatus::Failed(e.to_string())),
+            if persist_job(j) {
+                if matches!(j.status,JobStatus::Done(_)) {
+                    crate::wetube_publish::forget(&job.durable_id);
+                    let _=store::wetube_kv_set(&format!("wetube_resume_{}",job.durable_id),"");
+                }
+            }else{
+                j.status=JobStatus::Failed("Could not persist terminal state; Retry reconciles any published file".into());
+                eprintln!("WeTube download journal: terminal state write failed");
+            }
         }
-        if persist_history(&jobs2.lock()) {
-            let done=jobs2.lock().iter().any(|j|j.id==jid&&matches!(j.status,JobStatus::Done(_)));
-            if done {
-                crate::wetube_publish::forget(&job.durable_id);
-                let _=store::wetube_kv_set(&format!("wetube_resume_{}",job.durable_id),"");
-            }
-        } else {eprintln!("WeTube download journal: terminal state write failed");}
     });
 }
 
@@ -954,6 +968,9 @@ fn restore_status(s: &Saved) -> JobStatus {
     else if s.cancelled { JobStatus::Cancelled }
     else if let Some(p) = &s.path { JobStatus::Done(p.clone()) }
     else { JobStatus::Failed(s.error.clone().unwrap_or_else(|| "Download failed".into())) }
+}
+fn persist_job(j:&Job)->bool {
+    serde_json::to_string(&saved_job(j)).ok().is_some_and(|raw|store::update_download_row(&j.durable_id,&raw).is_ok())
 }
 fn persist_history(jobs: &[Job]) -> bool {
     let rows: anyhow::Result<Vec<_>>=jobs.iter().map(|j|Ok((j.durable_id.clone(),serde_json::to_string(&saved_job(j))?))).collect();

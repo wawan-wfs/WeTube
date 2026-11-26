@@ -150,7 +150,7 @@ impl Render for SearchPage {
             .justify_between()
             .pb_2()
             .child(
-                div().flex().gap_2().children(
+                div().flex().flex_wrap().gap_2().children(
                     [("All", 0u8), ("Videos", 1), ("Channels", 2), ("Playlists", 3), ("Movies", 4)].into_iter().map(|(l, k)| {
                         chip(SharedString::from(format!("t-{l}")), l, f.kind == k, cx).on_click(cx.listener(move |this, _, _, cx| {
                             this.filter.kind = k;
@@ -240,8 +240,7 @@ impl Render for SearchPage {
                 .pt_4()
                 .pb_24()
                 .child(div().w(width).flex().flex_col().gap_3()
-                    .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child("Search results"))
-                    .child(div().text_sm().text_color(p.text2).child(self.query.clone()))
+                    .child(workspace_header("Search results", self.query.clone(), "search", cx))
                     .child(header).children(filters).child(body)),
         )
     }

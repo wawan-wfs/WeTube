@@ -285,7 +285,7 @@ impl Render for HistoryPage {
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .child(section_title("History", cx).text_3xl())
+                    .child(workspace_header("History", "Review and manage your watch and search history", "history", cx))
                     .child(tabs)
                     .child(div().flex().gap_8().child(list).child(side)),
             ),
@@ -396,7 +396,7 @@ impl Render for LibraryPage {
                 .pt_6()
                 .pb_24()
                 .child(div().flex().flex_col().gap_3().p_5().rounded_xl().bg(p.surface).border_1().border_color(p.border)
-                    .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child("Your library"))
+                    .child(workspace_header("Your library", "Playlists, saved videos and playback recovery", "library", cx))
                     .child(div().text_sm().text_color(p.text2).child(format!("{} local playlists · {} saved entries · on this device", pls.len(), total_videos)))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(pill("lib-go-history", Some("history"), "Watch history", cx).on_click(|_, window, cx| navigate(Route::History, window, cx)))

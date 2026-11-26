@@ -205,12 +205,13 @@ impl Render for PlaylistPage {
         let remote_info = self.info.clone();
         let saved = remote_info.as_ref().map(|i| store::is_playlist_saved(&i.id)).unwrap_or(false);
         let owner = self.owner.clone();
+        let compact = content_width(cx) < px(920.);
         let header = div()
             .flex()
             .flex_col()
             .flex_none()
             .gap_4()
-            .w(px(360.))
+            .w(if compact { (content_width(cx)-px(48.)).max(px(240.)) } else { px(360.) })
             .p_6()
             .rounded_2xl()
             .bg(linear_gradient(180., linear_color_stop(p.hover, 0.), linear_color_stop(p.bg, 1.)))
@@ -394,6 +395,6 @@ impl Render for PlaylistPage {
                 col.into_any_element()
             }
         };
-        page_scroll("pl-scroll", &self.scroll).child(div().flex().items_start().gap_6().px_6().pt_6().pb_24().child(header).child(list))
+        page_scroll("pl-scroll", &self.scroll).child(div().flex().flex_col().gap_4().px_6().pt_6().pb_24().child(workspace_header("Playlist", "Play, organize and manage your video collection", "list-video", cx)).child(div().flex().items_start().gap_6().when(compact, |d| d.flex_col()).child(header).child(list)))
     }
 }

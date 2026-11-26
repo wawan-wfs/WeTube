@@ -187,6 +187,16 @@ pub fn content_width(cx: &App) -> Pixels {
     if w <= px(100.) { px(1000.) } else { w }
 }
 
+/// Shared native workspace heading: hierarchy, context and theme-aware surface.
+pub fn workspace_header(title: impl Into<SharedString>, subtitle: impl Into<SharedString>, symbol: &str, cx: &App) -> Div {
+    let p=pal(cx);
+    div().flex().items_center().gap_4().p_4().rounded_xl().bg(p.surface).border_1().border_color(p.border)
+        .child(div().size_10().flex_none().flex().items_center().justify_center().rounded_lg().bg(p.accent.opacity(0.12)).child(icon(symbol).size_5().text_color(p.accent)))
+        .child(div().flex().flex_col().flex_1().min_w_0().gap_1()
+            .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(title.into()))
+            .child(div().text_sm().text_color(p.text2).child(subtitle.into())))
+}
+
 pub fn section_title(text: impl Into<SharedString>, cx: &App) -> Div {
     let p = pal(cx);
     div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(text.into())

@@ -85,8 +85,7 @@ impl Render for PipView {
                     .flex()
                     .items_center()
                     .justify_end()
-                    .invisible()
-                    .group_hover("pip", |s| s.visible())
+                    .visible()
                     .bg(linear_gradient(180., linear_color_stop(hsla(0., 0., 0., 0.6), 0.), linear_color_stop(hsla(0., 0., 0., 0.), 1.)))
                     .child(div().id("pip-drag").flex_1().h_full().window_control_area(WindowControlArea::Drag))
                     .child(

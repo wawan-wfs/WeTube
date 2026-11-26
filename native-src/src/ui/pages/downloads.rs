@@ -28,6 +28,7 @@ impl Render for DownloadsPage {
         let active = jobs.iter().filter(|j| matches!(j.status, JobStatus::Queued | JobStatus::Running)).count();
         let done = jobs.iter().filter(|j| matches!(j.status, JobStatus::Done(_))).count();
         let failed = jobs.iter().filter(|j| matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled)).count();
+        let interrupted = crate::downloads::interrupted_count(cx);
         let filter = self.filter;
         let visible = jobs.iter().rev().filter(|j| {
             let category = match &j.status { JobStatus::Queued | JobStatus::Running => 1, JobStatus::Done(_) => 2, _ => 3 };
@@ -109,7 +110,7 @@ impl Render for DownloadsPage {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(section_title("Downloads", cx).text_3xl())
+                            .child(workspace_header("Downloads", "Manage active, finished and interrupted downloads", "download", cx))
                             .child(
                                 div()
                                     .flex()
@@ -145,7 +146,9 @@ impl Render for DownloadsPage {
                     .child(div().flex().flex_col().gap_3().p_4().rounded_xl().border_1().border_color(p.border).bg(p.surface)
                         .child(div().text_sm().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(format!("{active} active · {done} completed · {failed} failed or cancelled")))
                         .child(gpui_kit::component::input::Input::new(&self.search).appearance(false).cleanable(true))
-                        .child(filters))
+                        .child(filters)
+                        .when(interrupted > 0, |d| d.child(div().p_3().rounded_lg().bg(p.surface2).border_1().border_color(p.border)
+                            .text_sm().text_color(p.text).child(format!("{interrupted} interrupted downloads recovered. Use Retry to restart selected items; no automatic network activity.")))))
                     .child(list),
             ),
         )

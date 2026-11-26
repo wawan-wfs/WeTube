@@ -1775,7 +1775,14 @@ impl AppView {
         let dialog_focused = self.dialog_input.read(cx).focus_handle(cx).is_focused(window);
         let k = ev.keystroke.key.as_str();
         let m = &ev.keystroke.modifiers;
-        if k == "f5" || (m.control && k == "r" && !search_focused && !dialog_focused) {
+        if k == "f6" && self.dialog.is_none() {
+            if search_focused { window.focus(&self.focus, cx); } else { window.focus(&self.search.read(cx).focus_handle(cx), cx); }
+            cx.notify(); return;
+        }
+        if k == "f11" && matches!(self.route, Route::Watch { .. }) && self.dialog.is_none() {
+            toggle_fullscreen(window, cx); return;
+        }
+        if k == "f5" || (m.control && k == "r" && !search_focused && !dialog_focused && window.focused(cx).map(|f| f == self.focus).unwrap_or(true)) {
             self.refresh(window, cx);
             return;
         }
@@ -1879,7 +1886,7 @@ impl AppView {
         if m.control || m.platform || m.alt {
             return;
         }
-        if matches!(self.route, Route::Shorts(_)) {
+        if matches!(self.route, Route::Shorts(_)) && window.focused(cx).map(|f| f == self.focus).unwrap_or(true) {
             if let Some(page) = self.page.clone().downcast::<shorts::ShortsPage>().ok() {
                 if k == "down" || k == "up" {
                     page.update(cx, |s, cx| s.step(if k == "down" { 1 } else { -1 }, window, cx));

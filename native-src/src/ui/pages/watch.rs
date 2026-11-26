@@ -1477,12 +1477,12 @@ impl Render for WatchPage {
             return div().size_full().bg(black()).child(crate::ui::slot::player_slot(cx)).into_any_element();
         }
         let vp = ui.viewport;
-        let avail = vp.width - px(48.);
+        let avail = (vp.width - px(48.)).max(px(160.));
         let side_w = px(402.);
         let two_col = avail > px(1000.);
         let primary_w = if two_col { (avail - side_w - px(24.)).min(px(1280.)) } else { avail };
         let player_h = if ui.theater {
-            (vp.width * (9. / 16.)).min(vp.height - px(56. + 120.))
+            (vp.width * (9. / 16.)).min((vp.height - px(56. + 120.)).max(px(90.)))
         } else {
             primary_w * (9. / 16.)
         };
@@ -1558,7 +1558,7 @@ impl Render for WatchPage {
                 .child(div().flex().flex_col().w(primary_w).flex_none().child(player_box).child(primary_info))
                 .child(secondary)
         };
-        page_scroll("watch-scroll", &self.scroll).child(body).into_any_element()
+        page_scroll("watch-scroll", &self.scroll).child(div().flex().flex_col().when(!ui.theater, |d| d.child(div().px_6().pt_4().child(workspace_header("Now watching", "Native playback · F fullscreen · Esc exit", "play", cx)))).child(body)).into_any_element()
     }
 }
 

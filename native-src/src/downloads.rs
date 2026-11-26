@@ -24,6 +24,7 @@ pub struct Job {
     pub id: u64,
     pub video: VideoItem,
     pub format: String,
+    pub directory: String,
     pub status: JobStatus,
     pub progress: f32,
     pub detail: String,
@@ -35,6 +36,8 @@ pub struct Downloads {
     pub jobs: Arc<Mutex<Vec<Job>>>,
     next: u64,
     ticking: bool,
+    history_loaded: bool,
+    history_blocked: bool,
 }
 
 impl Global for Downloads {}
@@ -105,6 +108,7 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         .detach();
         return;
     }
+    if cx.default_global::<Downloads>().history_blocked { toast(cx, "Download history could not be read. New downloads are paused to protect local recovery data."); return; }
     let fmt = format.unwrap_or_else(|| store::settings_snapshot().download_format.clone());
     if !FORMATS.iter().any(|(key, _)| *key == fmt.as_str()) && fmt != "single" {
         toast(cx, "Unsupported download format"); return;
@@ -170,13 +174,24 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         id: d.next,
         video: video.clone(),
         format: fmt,
+        directory: store::settings_snapshot().download_dir.clone(),
         status: JobStatus::Queued,
         progress: 0.0,
         detail: String::new(),
         cancel: Arc::new(AtomicBool::new(false)),
     };
     let jobs = d.jobs.clone();
-    jobs.lock().push(job.clone());
+    {
+        let mut list = jobs.lock();
+        list.push(job.clone());
+        // Persist admission before starting any worker; never silently lose queued intent.
+        if !persist_history(&list) {
+            list.pop();
+            drop(list);
+            toast(cx, "Could not save download queue; download not started");
+            return;
+        }
+    }
     toast(cx, format!("Downloading “{}”", video.title));
     let jid = job.id;
     let cancel = job.cancel.clone();
@@ -191,6 +206,7 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         loop {
             if cancel.load(Ordering::SeqCst) {
                 update(&|j| j.status = JobStatus::Cancelled);
+                let _ = persist_history(&jobs2.lock());
                 return;
             }
             if claim_download_slot(&mut jobs2.lock(), jid) { break; }
@@ -213,6 +229,7 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
             }
             Err(e) => update(&|j| j.status = JobStatus::Failed(e.to_string())),
         }
+        if !persist_history(&jobs2.lock()) { eprintln!("WeTube download journal: terminal state write failed"); }
     });
     ensure_ticking(cx);
 }
@@ -272,7 +289,8 @@ fn sanitize(s: &str) -> String {
 
 fn run_job(job: &Job, cancel: &AtomicBool, progress: &dyn Fn(f32, &str)) -> anyhow::Result<String> {
     let s = store::settings_snapshot();
-    let dir = std::path::PathBuf::from(if s.download_dir.is_empty() { ".".into() } else { s.download_dir.clone() });
+    anyhow::ensure!(!job.directory.is_empty(), "Select a download folder");
+    let dir = std::path::PathBuf::from(&job.directory);
     std::fs::create_dir_all(&dir)?;
     let url = format!("https://www.youtube.com/watch?v={}", job.video.id);
     if let Some(bin) = streams::ytdlp_path() {
@@ -351,7 +369,7 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
         }
         // --print makes yt-dlp quiet, so progress is asked for explicitly in a fixed format.
         // Fragments and chunks download in parallel, which is much faster than one stream.
-        cmd.args(["--newline", "--no-warnings", "--no-playlist", "--progress", "--progress-delta", "0.4", "--socket-timeout", "20", "--retries", "2"])
+        cmd.args(["--newline", "--no-warnings", "--no-playlist", "--no-overwrites", "--progress", "--progress-delta", "0.4", "--socket-timeout", "20", "--retries", "2"])
             .args(["--progress-template", "download:[dl] %(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"])
             .args(["-N", "8", "--http-chunk-size", "10M", "-f", fmt, "-o"])
             .arg(match name {
@@ -490,7 +508,8 @@ fn native_download(job: &Job, dir: &std::path::Path, cancel: &AtomicBool, progre
     };
     let path = dir.join(format!("{} [{}].{ext}", sanitize(&info.title), job.video.id));
     anyhow::ensure!(!path.exists(), "Destination already exists");
-    let partial = path.with_extension(format!("{ext}.part-{}", job.id));
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let partial = path.with_extension(format!("{ext}.part-{}-{nonce}", job.id));
     let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&partial)?;
     let result = (|| -> anyhow::Result<()> {
         crate::api::http::download_to(&fmt.url, &mut f, |done, total| {
@@ -746,7 +765,7 @@ fn verify_output(dir: &std::path::Path, path: &str) -> anyhow::Result<String> {
 mod wetube_download_regression {
     use super::*;
     fn job(id: u64) -> Job {
-        Job { id, video: VideoItem::default(), format: "audio".into(), status: JobStatus::Queued, progress: 0.0, detail: String::new(), cancel: Arc::new(AtomicBool::new(false)) }
+        Job { id, video: VideoItem::default(), format: "audio".into(), directory: String::new(), status: JobStatus::Queued, progress: 0.0, detail: String::new(), cancel: Arc::new(AtomicBool::new(false)) }
     }
     #[test] fn fifo_and_capacity() {
         let mut jobs=vec![job(1),job(2),job(3),job(4)];
@@ -809,45 +828,103 @@ struct Saved {
     format: String,
     path: Option<String>,
     error: Option<String>,
+    #[serde(default)]
+    directory: String,
+    #[serde(default)]
+    active: bool,
+    #[serde(default)]
+    cancelled: bool,
 }
 
 const HISTORY_KEY: &str = "download_history";
+const HISTORY_LIMIT: usize = 16 * 1024 * 1024;
+const INTERRUPTED: &str = "Interrupted by previous shutdown. Retry explicitly; existing files will not be overwritten.";
 
+fn bounded_metadata(v: &VideoItem) -> VideoItem {
+    let short = |s: &str| s.chars().filter(|c| !c.is_control()).take(180).collect::<String>();
+    VideoItem { id: v.id.clone(), title: short(&v.title), channel_name: short(&v.channel_name),
+        thumbnail: crate::api::innertube::default_thumb(&v.id), duration_secs: v.duration_secs, ..Default::default() }
+}
+fn saved_job(j: &Job) -> Saved {
+    let (path,error,active,cancelled) = match &j.status {
+        JobStatus::Done(p) => (Some(p.clone()),None,false,false),
+        JobStatus::Failed(e) => (None,Some(if e.starts_with("yt-dlp exit ") || e == INTERRUPTED { e.clone() } else { "Download failed. Retry or check media tools and output folder.".into() }),false,false),
+        JobStatus::Queued | JobStatus::Running => (None,None,true,false),
+        JobStatus::Cancelled => (None,None,false,true),
+    };
+    Saved { video: bounded_metadata(&j.video), format: j.format.clone(), path, error, directory: j.directory.clone(), active, cancelled }
+}
+fn restore_status(s: &Saved) -> JobStatus {
+    if s.active { JobStatus::Failed(INTERRUPTED.into()) }
+    else if s.cancelled { JobStatus::Cancelled }
+    else if let Some(p) = &s.path { JobStatus::Done(p.clone()) }
+    else { JobStatus::Failed(s.error.clone().unwrap_or_else(|| "Download failed".into())) }
+}
+fn persist_history(jobs: &[Job]) -> bool {
+    let saved: Vec<_> = jobs.iter().map(saved_job).collect();
+    serde_json::to_string(&saved).ok().filter(|s| s.len() <= HISTORY_LIMIT)
+        .is_some_and(|s| store::wetube_kv_set(HISTORY_KEY, &s))
+}
 fn save_history(cx: &mut App) {
-    let jobs = cx.default_global::<Downloads>().jobs.lock().clone();
-    let saved: Vec<Saved> = jobs
-        .iter()
-        .filter_map(|j| match &j.status {
-            JobStatus::Done(p) => Some(Saved { video: j.video.clone(), format: j.format.clone(), path: Some(p.clone()), error: None }),
-            JobStatus::Failed(e) => Some(Saved { video: j.video.clone(), format: j.format.clone(), path: None, error: Some(e.clone()) }),
-            _ => None,
-        })
-        .collect();
-    if let Ok(s) = serde_json::to_string(&saved) {
-        store::kv_set(HISTORY_KEY, &s);
+    let d = cx.default_global::<Downloads>();
+    if d.history_blocked { return; }
+    if !persist_history(&d.jobs.lock()) {
+        toast(cx, "Could not save download history");
     }
 }
 
-/// Loads the saved download list at startup.
+/// Restore interrupted work as explicit retry candidates, never auto-start it.
 pub fn load_history(cx: &mut App) {
-    let Some(raw) = store::kv_get(HISTORY_KEY) else { return };
-    let Ok(saved) = serde_json::from_str::<Vec<Saved>>(&raw) else { return };
     let d = cx.default_global::<Downloads>();
+    if d.history_loaded { return; }
+    d.history_loaded = true;
+    let Some(raw) = store::kv_get(HISTORY_KEY) else { return };
+    if raw.len() > HISTORY_LIMIT {
+        d.history_blocked = true; return;
+    }
+    let Ok(saved) = serde_json::from_str::<Vec<Saved>>(&raw) else {
+        d.history_blocked = true; return;
+    };
     let mut jobs = d.jobs.lock();
     for s in saved {
+        let status = restore_status(&s);
+        if !crate::wetube_session::valid_id(&s.video.id) { continue; }
         d.next += 1;
-        jobs.push(Job {
-            id: d.next,
-            video: s.video,
-            format: s.format,
-            status: match (s.path, s.error) {
-                (Some(p), _) => JobStatus::Done(p),
-                (None, e) => JobStatus::Failed(e.unwrap_or_default()),
-            },
-            progress: 1.0,
-            detail: String::new(),
-            cancel: Arc::new(AtomicBool::new(false)),
-        });
+        let progress = if matches!(status, JobStatus::Done(_)) { 1.0 } else { 0.0 };
+        jobs.push(Job { id: d.next, video: s.video, format: s.format, directory: s.directory,
+            status, progress, detail: String::new(), cancel: Arc::new(AtomicBool::new(false)) });
+    }
+}
+
+pub fn interrupted_count(cx: &App) -> usize {
+    cx.try_global::<Downloads>().map(|d| d.jobs.lock().iter().filter(|j| matches!(&j.status, JobStatus::Failed(e) if e == INTERRUPTED)).count()).unwrap_or(0)
+}
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+    fn example() -> Job {
+        Job { id: 1, video: VideoItem { id:"abcdefghijk".into(), title:"video".into(), ..Default::default() }, format:"audio".into(), directory:"downloads".into(), status:JobStatus::Running, progress:0.5, detail:"".into(),cancel:Arc::new(AtomicBool::new(false)) }
+    }
+    #[test] fn active_recovers_without_auto_start() {
+        let s=saved_job(&example());
+        assert!(s.active);
+        assert_eq!(restore_status(&s), JobStatus::Failed(INTERRUPTED.into()));
+        assert_eq!(s.directory,"downloads");
+    }
+    #[test] fn terminal_state_roundtrip() {
+        let mut j=example(); j.status=JobStatus::Cancelled;
+        let s:Saved=serde_json::from_str(&serde_json::to_string(&saved_job(&j)).unwrap()).unwrap();
+        assert_eq!(restore_status(&s),JobStatus::Cancelled);
+        j.status=JobStatus::Done("file.mp4".into());
+        assert_eq!(restore_status(&saved_job(&j)),JobStatus::Done("file.mp4".into()));
+    }
+    #[test] fn legacy_history_and_sensitive_error() {
+        let j=example();
+        let old=serde_json::json!({"video":j.video,"format":"audio","path":"old.mp4","error":null});
+        let s:Saved=serde_json::from_value(old).unwrap();
+        assert_eq!(restore_status(&s),JobStatus::Done("old.mp4".into()));
+        let mut j=example(); j.status=JobStatus::Failed("https://example.org/?secret=abc".into());
+        assert!(!serde_json::to_string(&saved_job(&j)).unwrap().contains("secret=abc"));
     }
 }
 

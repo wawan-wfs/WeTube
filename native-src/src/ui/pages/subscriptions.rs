@@ -249,7 +249,7 @@ impl Render for FeedPage {
             }
             col.into_any_element()
         };
-        page_scroll("feed-scroll", &self.scroll).child(div().px_6().pt_4().pb_24().child(header).child(body)).into_any_element()
+        page_scroll("feed-scroll", &self.scroll).child(div().px_6().pt_4().pb_24().flex().flex_col().gap_4().child(workspace_header("Subscriptions", "Follow your channels and browse recent uploads", "tv", cx)).child(header).child(body)).into_any_element()
     }
 }
 

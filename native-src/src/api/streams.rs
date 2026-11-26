@@ -577,7 +577,7 @@ pub fn ytdlp_path() -> Option<String> {
     let custom = crate::store::settings_snapshot().ytdlp_path.clone();
     if let Some((key, found)) = CACHED.lock().clone() {
         if key == custom {
-            return found;
+            if found.as_ref().is_none_or(|p| p == "yt-dlp" || std::path::Path::new(p).is_file()) { return found; }
         }
     }
     let found = find_ytdlp(&custom);
@@ -631,6 +631,46 @@ pub fn hide_window(cmd: &mut Command) {
     let _ = cmd;
 }
 
+/// Capture bounded output and impose a wall-clock deadline on stream extraction.
+/// Reader threads drain both pipes even on overflow; no raw diagnostics are persisted.
+fn bounded_tool_output(cmd: &mut Command, timeout: std::time::Duration) -> Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Instant;
+    fn drain<R: Read + Send + 'static>(mut reader:R, limit:usize) -> mpsc::Receiver<Result<Vec<u8>>> {
+        let (tx,rx)=mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let mut data=Vec::new(); let mut buf=[0u8;8192]; let mut overflow=false;
+            let result=(|| -> Result<Vec<u8>> {
+                loop { let n=reader.read(&mut buf)?; if n==0 { break; }
+                    if data.len().saturating_add(n)<=limit { data.extend_from_slice(&buf[..n]); } else { overflow=true; }
+                }
+                anyhow::ensure!(!overflow,"Media tool output exceeded limit");
+                Ok(data)
+            })();
+            let _=tx.send(result);
+        });
+        rx
+    }
+    let mut child=cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let stdout=drain(child.stdout.take().ok_or_else(|| anyhow!("Media tool stdout unavailable"))?,16*1024*1024);
+    let stderr=drain(child.stderr.take().ok_or_else(|| anyhow!("Media tool stderr unavailable"))?,256*1024);
+    let deadline=Instant::now()+timeout;
+    let status=loop {
+        match child.try_wait() {
+            Ok(Some(s))=>break s,
+            Ok(None) if Instant::now()<deadline=>std::thread::sleep(std::time::Duration::from_millis(50)),
+            Ok(None)=>{ let _=child.kill(); let _=child.wait(); return Err(anyhow!("Media tool timed out")); }
+            Err(e)=>{ let _=child.kill(); let _=child.wait(); return Err(e.into()); }
+        }
+    };
+    let remaining=deadline.saturating_duration_since(Instant::now());
+    let stdout=stdout.recv_timeout(remaining).map_err(|_| anyhow!("Media tool stdout drain timed out"))??;
+    let stderr=stderr.recv_timeout(deadline.saturating_duration_since(Instant::now())).map_err(|_| anyhow!("Media tool stderr drain timed out"))??;
+    Ok(std::process::Output{status,stdout,stderr})
+}
+
 pub fn ytdlp_streams(video_id: &str) -> Result<StreamInfo> {
     anyhow::ensure!(crate::wetube_session::valid_id(video_id), "Invalid video ID");
     let bin = ytdlp_path().ok_or_else(|| anyhow!("yt-dlp not found (install it or set its path in Settings)"))?;
@@ -644,13 +684,13 @@ pub fn ytdlp_streams(video_id: &str) -> Result<StreamInfo> {
     }
     cmd.arg(format!("https://www.youtube.com/watch?v={video_id}"));
     hide_window(&mut cmd);
-    let mut out = cmd.output()?;
+    let mut out = bounded_tool_output(&mut cmd, std::time::Duration::from_secs(90))?;
     if !out.status.success() && crate::downloads::retry_with_ios(&String::from_utf8_lossy(&out.stderr)) {
         // videos made for kids: yt-dlp's default clients refuse them, its iOS client doesn't
         let mut retry = Command::new(ytdlp_path().unwrap_or_default());
         retry.args(cmd.get_args()).arg("--extractor-args").arg(crate::downloads::YTDLP_IOS);
         hide_window(&mut retry);
-        if let Ok(o) = retry.output() {
+        if let Ok(o) = bounded_tool_output(&mut retry, std::time::Duration::from_secs(90)) {
             if o.status.success() {
                 out = o;
             }

@@ -1288,7 +1288,7 @@ impl Render for SettingsPage {
                     .gap_4()
                     .flex_1().max_w(px(860.))
                     .min_w_0()
-                    .child(section_title(title, cx).text_2xl())
+                    .child(workspace_header(title, "WeTube Desktop by WFS Project · local preferences", "settings", cx))
                     .child(content),
             ),
         )

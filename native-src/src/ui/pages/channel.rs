@@ -373,7 +373,7 @@ impl Render for ChannelPage {
                     .px_6()
                     .pt_4()
                     .pb_24()
-                    .child(div().w(width).flex().flex_col().gap_4().child(header).child(tabs).child(body)),
+                    .child(div().w(width).flex().flex_col().gap_4().child(workspace_header("Channel", "Explore uploads, playlists and community", "tv", cx)).child(header).child(tabs).child(body)),
             )
             .into_any_element()
     }

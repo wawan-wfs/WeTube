@@ -22,6 +22,7 @@ pub enum JobStatus {
 #[derive(Clone)]
 pub struct Job {
     pub id: u64,
+    pub durable_id: String,
     pub video: VideoItem,
     pub format: String,
     pub directory: String,
@@ -172,6 +173,7 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
     d.next += 1;
     let job = Job {
         id: d.next,
+        durable_id: new_durable_id(),
         video: video.clone(),
         format: fmt,
         directory: store::settings_snapshot().download_dir.clone(),
@@ -193,6 +195,11 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         }
     }
     toast(cx, format!("Downloading “{}”", video.title));
+    spawn_job(job, jobs);
+    ensure_ticking(cx);
+}
+
+fn spawn_job(job: Job, jobs: Arc<Mutex<Vec<Job>>>) {
     let jid = job.id;
     let cancel = job.cancel.clone();
     let jobs2 = jobs.clone();
@@ -231,7 +238,6 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         }
         if !persist_history(&jobs2.lock()) { eprintln!("WeTube download journal: terminal state write failed"); }
     });
-    ensure_ticking(cx);
 }
 
 /// Atomic FIFO admission while holding the job-list lock.
@@ -243,10 +249,32 @@ fn claim_download_slot(jobs: &mut [Job], id: u64) -> bool {
     true
 }
 pub fn retry(id: u64, cx: &mut App) {
-    let job = cx.default_global::<Downloads>().jobs.lock().iter()
-        .find(|j| j.id == id && matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled)).cloned();
-    if let Some(j) = job { start(j.video, Some(j.format), cx); }
+    if history_blocked(cx) { toast(cx, "Download journal is unreadable"); return; }
+    let jobs = cx.default_global::<Downloads>().jobs.clone();
+    let prepared = (|| -> anyhow::Result<Job> {
+        let mut list = jobs.lock();
+        let i = list.iter().position(|j| j.id == id && matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled))
+            .ok_or_else(|| anyhow::anyhow!("Job is not retryable"))?;
+        let old = list[i].clone();
+        anyhow::ensure!(list.iter().filter(|j| matches!(j.status,JobStatus::Queued|JobStatus::Running)).count()<500,"Download queue is full");
+        anyhow::ensure!(!list.iter().any(|j| j.id!=id && j.video.id==old.video.id && j.format==old.format && matches!(j.status,JobStatus::Queued|JobStatus::Running)),"This video and format is already active");
+        anyhow::ensure!(FORMATS.iter().any(|(k,_)| *k==old.format.as_str()) || old.format=="single","Unsupported download format");
+        let mut job=old.clone();
+        if job.directory.is_empty() { job.directory=store::settings_snapshot().download_dir.clone(); }
+        anyhow::ensure!(!job.directory.is_empty(),"Choose a download folder in Settings");
+        job.status=JobStatus::Queued;
+        job.progress=0.0; job.detail.clear(); job.cancel=Arc::new(AtomicBool::new(false));
+        list[i]=job.clone();
+        if !persist_history(&list) { list[i]=old; anyhow::bail!("Could not persist retry"); }
+        Ok(job)
+    })();
+    match prepared {
+        Ok(job)=>{ spawn_job(job,jobs); ensure_ticking(cx); cx.refresh_windows(); }
+        Err(e)=>toast(cx,e.to_string()),
+    }
 }
+fn new_durable_id() -> String { format!("{:032x}",rand::random::<u128>()) }
+fn valid_durable_id(id:&str)->bool { id.len()==32 && id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) }
 
 fn ensure_ticking(cx: &mut App) {
     if cx.default_global::<Downloads>().ticking {
@@ -292,6 +320,7 @@ fn run_job(job: &Job, cancel: &AtomicBool, progress: &dyn Fn(f32, &str)) -> anyh
     anyhow::ensure!(!job.directory.is_empty(), "Select a download folder");
     let dir = std::path::PathBuf::from(&job.directory);
     std::fs::create_dir_all(&dir)?;
+    anyhow::ensure!(crate::wetube_session::valid_id(&job.video.id) && valid_durable_id(&job.durable_id),"Invalid job identity");
     let url = format!("https://www.youtube.com/watch?v={}", job.video.id);
     if let Some(bin) = streams::ytdlp_path() {
         let fmt = match job.format.as_str() {
@@ -301,41 +330,9 @@ fn run_job(job: &Job, cancel: &AtomicBool, progress: &dyn Fn(f32, &str)) -> anyh
             "best" => "bv*+ba/b".to_string(),
             h => format!("bv*[height<={h}]+ba/b[height<={h}]/b"),
         };
-        let res = match ytdlp_run(&bin, &dir, &url, &fmt, &s, &[], None, cancel, progress) {
-            Err(e) if e.to_string().contains("403") && !cancel.load(Ordering::SeqCst) => {
-                // a stream URL was refused: retry preferring the HLS formats, which don't need a PO token
-                progress(0.0, "Retrying…");
-                let hls = format!("{}/{}", fmt.replace("bv*", "bv*[protocol^=m3u8]"), fmt);
-                ytdlp_run(&bin, &dir, &url, &hls, &s, &[], None, cancel, progress)
-            }
-            other => other,
-        };
-        return match res {
-            Err(e) if retry_with_ios(&e.to_string()) && !cancel.load(Ordering::SeqCst) => {
-                // videos made for kids are refused to yt-dlp's default clients;
-                // the iOS client still serves them (its HLS formats need no PO token)
-                progress(0.0, "Retrying…");
-                match ytdlp_run(&bin, &dir, &url, &fmt, &s, &["--extractor-args", YTDLP_IOS], None, cancel, progress) {
-                    Err(e2) if e2.to_string() == "cancelled" => Err(e2),
-                    Err(_) if !cancel.load(Ordering::SeqCst) => {
-                        // yt-dlp found no formats either: download the HLS manifest the
-                        // app itself plays these videos from
-                        match streams::ios_hls_manifest(&job.video.id) {
-                            Ok(manifest) => {
-                                let fmt = if job.format == "single" { "bv*+ba/b".to_string() } else { fmt.clone() };
-                                let name = format!("{} [{}]", sanitize(&job.video.title).trim_end_matches('.').replace('%', "%%"), job.video.id);
-                                ytdlp_run(&bin, &dir, &manifest, &fmt, &s, &[], Some(&name), cancel, progress)
-                                    .map_err(|e3| if e3.to_string() == "cancelled" { e3 } else { e })
-                            }
-                            Err(_) => Err(e),
-                        }
-                    }
-                    other => other,
-                }
-            }
-            other => other,
-        };
+        return ytdlp_run(&bin, &dir, &url, &fmt, &s, &[], None, cancel, progress);
     }
+    anyhow::ensure!(job.format=="audio" || job.format=="single","yt-dlp is required for this format");
     native_download(job, &dir, cancel, progress)
 }
 
@@ -370,7 +367,7 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
         }
         // --print makes yt-dlp quiet, so progress is asked for explicitly in a fixed format.
         // Fragments and chunks download in parallel, which is much faster than one stream.
-        cmd.args(["--newline", "--no-warnings", "--no-playlist", "--no-overwrites", "--progress", "--progress-delta", "0.4", "--socket-timeout", "20", "--retries", "2"])
+        cmd.args(["--newline", "--no-warnings", "--no-playlist", "--no-overwrites", "--continue", "--progress", "--progress-delta", "0.4", "--socket-timeout", "20", "--retries", "2"])
             .args(["--progress-template", "download:[dl] %(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"])
             .args(["-N", "8", "--http-chunk-size", "10M", "-f", fmt, "-o"])
             .arg(match name {
@@ -487,7 +484,7 @@ pub(crate) fn ytdlp_failure(code: Option<i32>, stderr: &str) -> String {
 }
 #[cfg(test)]
 mod wetube_diagnostics_tests {
-    #[test]
+    #[::core::prelude::v1::test]
     fn failure_redacts_sensitive_text() {
         let m = super::ytdlp_failure(Some(1), "ERROR: https://example.org/?token=secret 403");
         assert!(m.contains("exit 1")); assert!(m.contains("refused")); assert!(!m.contains("secret"));
@@ -766,9 +763,9 @@ fn verify_output(dir: &std::path::Path, path: &str) -> anyhow::Result<String> {
 mod wetube_download_regression {
     use super::*;
     fn job(id: u64) -> Job {
-        Job { id, video: VideoItem::default(), format: "audio".into(), directory: String::new(), status: JobStatus::Queued, progress: 0.0, detail: String::new(), cancel: Arc::new(AtomicBool::new(false)) }
+        Job { id, durable_id: new_durable_id(), video: VideoItem::default(), format: "audio".into(), directory: String::new(), status: JobStatus::Queued, progress: 0.0, detail: String::new(), cancel: Arc::new(AtomicBool::new(false)) }
     }
-    #[test] fn fifo_and_capacity() {
+    #[::core::prelude::v1::test] fn fifo_and_capacity() {
         let mut jobs=vec![job(1),job(2),job(3),job(4)];
         assert!(!claim_download_slot(&mut jobs,2));
         for i in 1..=3 { assert!(claim_download_slot(&mut jobs,i)); }
@@ -776,7 +773,7 @@ mod wetube_download_regression {
         jobs[0].status=JobStatus::Done("file".into());
         assert!(claim_download_slot(&mut jobs,4));
     }
-    #[test] fn cancelled_waiter_does_not_block() {
+    #[::core::prelude::v1::test] fn cancelled_waiter_does_not_block() {
         let mut jobs=vec![job(1),job(2)];
         jobs[0].cancel.store(true,Ordering::SeqCst);
         assert!(claim_download_slot(&mut jobs,2));
@@ -825,6 +822,8 @@ pub fn summary(cx: &App) -> (usize, f32) {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Saved {
+    #[serde(default)]
+    durable_id: String,
     video: VideoItem,
     format: String,
     path: Option<String>,
@@ -853,7 +852,7 @@ fn saved_job(j: &Job) -> Saved {
         JobStatus::Queued | JobStatus::Running => (None,None,true,false),
         JobStatus::Cancelled => (None,None,false,true),
     };
-    Saved { video: bounded_metadata(&j.video), format: j.format.clone(), path, error, directory: j.directory.clone(), active, cancelled }
+    Saved { durable_id: j.durable_id.clone(), video: bounded_metadata(&j.video), format: j.format.clone(), path, error, directory: j.directory.clone(), active, cancelled }
 }
 fn restore_status(s: &Saved) -> JobStatus {
     if s.active { JobStatus::Failed(INTERRUPTED.into()) }
@@ -889,7 +888,8 @@ pub fn load_history(cx: &mut App) {
     let Ok(saved) = serde_json::from_str::<Vec<Saved>>(&raw) else {
         d.history_blocked = true; return;
     };
-    if saved.iter().any(|s| !crate::wetube_session::valid_id(&s.video.id)) {
+    let mut identities=std::collections::HashSet::new();
+    if saved.iter().any(|s| !crate::wetube_session::valid_id(&s.video.id) || (!s.durable_id.is_empty() && (!valid_durable_id(&s.durable_id) || !identities.insert(s.durable_id.clone())))) {
         d.history_blocked=true; return;
     }
     let mut jobs = d.jobs.lock();
@@ -897,9 +897,10 @@ pub fn load_history(cx: &mut App) {
         let status = restore_status(&s);
         d.next += 1;
         let progress = if matches!(status, JobStatus::Done(_)) { 1.0 } else { 0.0 };
-        jobs.push(Job { id: d.next, video: s.video, format: s.format, directory: s.directory,
+        jobs.push(Job { id: d.next, durable_id: if s.durable_id.is_empty() { new_durable_id() } else { s.durable_id }, video: s.video, format: s.format, directory: s.directory,
             status, progress, detail: String::new(), cancel: Arc::new(AtomicBool::new(false)) });
     }
+    if !persist_history(&jobs) { d.history_blocked=true; }
 }
 
 pub fn history_blocked(cx: &App) -> bool {
@@ -912,22 +913,24 @@ pub fn interrupted_count(cx: &App) -> usize {
 mod journal_tests {
     use super::*;
     fn example() -> Job {
-        Job { id: 1, video: VideoItem { id:"abcdefghijk".into(), title:"video".into(), ..Default::default() }, format:"audio".into(), directory:"downloads".into(), status:JobStatus::Running, progress:0.5, detail:"".into(),cancel:Arc::new(AtomicBool::new(false)) }
+        Job { id: 1, durable_id: new_durable_id(), video: VideoItem { id:"abcdefghijk".into(), title:"video".into(), ..Default::default() }, format:"audio".into(), directory:"downloads".into(), status:JobStatus::Running, progress:0.5, detail:"".into(),cancel:Arc::new(AtomicBool::new(false)) }
     }
-    #[test] fn active_recovers_without_auto_start() {
+    #[::core::prelude::v1::test] fn active_recovers_without_auto_start() {
         let s=saved_job(&example());
         assert!(s.active);
         assert_eq!(restore_status(&s), JobStatus::Failed(INTERRUPTED.into()));
         assert_eq!(s.directory,"downloads");
+        assert!(valid_durable_id(&s.durable_id));
+        assert!(!valid_durable_id("../unsafe"));
     }
-    #[test] fn terminal_state_roundtrip() {
+    #[::core::prelude::v1::test] fn terminal_state_roundtrip() {
         let mut j=example(); j.status=JobStatus::Cancelled;
         let s:Saved=serde_json::from_str(&serde_json::to_string(&saved_job(&j)).unwrap()).unwrap();
         assert_eq!(restore_status(&s),JobStatus::Cancelled);
         j.status=JobStatus::Done("file.mp4".into());
         assert_eq!(restore_status(&saved_job(&j)),JobStatus::Done("file.mp4".into()));
     }
-    #[test] fn legacy_history_and_sensitive_error() {
+    #[::core::prelude::v1::test] fn legacy_history_and_sensitive_error() {
         let j=example();
         let old=serde_json::json!({"video":j.video,"format":"audio","path":"old.mp4","error":null});
         let s:Saved=serde_json::from_value(old).unwrap();

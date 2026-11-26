@@ -151,7 +151,7 @@ impl Render for DownloadsPage {
                         .when(journal_blocked, |d| d.child(div().p_3().rounded_lg().bg(p.surface2).border_1().border_color(p.border)
                             .text_sm().text_color(p.text).child("Saved download history could not be read. New downloads are paused; existing history has not been overwritten.")))
                         .when(interrupted > 0, |d| d.child(div().p_3().rounded_lg().bg(p.surface2).border_1().border_color(p.border)
-                            .text_sm().text_color(p.text).child(format!("{interrupted} interrupted downloads recovered. Use Retry to restart selected items; no automatic network activity.")))))
+                            .text_sm().text_color(p.text).child(format!("{interrupted} interrupted downloads recovered. Use Retry to recover selected items in their original folder; no automatic network activity.")))))
                     .child(list),
             ),
         )

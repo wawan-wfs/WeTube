@@ -8,13 +8,15 @@ pub struct DownloadsPage {
     scroll: ScrollHandle,
     filter: u8,
     search: Entity<gpui_kit::component::input::InputState>,
+    page: usize,
+    last_query: String,
 }
 
 impl DownloadsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx).placeholder("Search downloads"));
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
-        Self { scroll: ScrollHandle::new(), filter: 0, search }
+        Self { scroll: ScrollHandle::new(), filter: 0, search, page:0,last_query:String::new() }
     }
 }
 
@@ -25,6 +27,7 @@ impl Render for DownloadsPage {
         let dir = store::settings_snapshot().download_dir.clone();
         let ytdlp = crate::api::streams::ytdlp_path().is_some();
         let query = self.search.read(cx).value().trim().to_lowercase();
+        if query!=self.last_query {self.last_query=query.clone();self.page=0;}
         let active = jobs.iter().filter(|j| matches!(j.status, JobStatus::Queued | JobStatus::Running)).count();
         let done = jobs.iter().filter(|j| matches!(j.status, JobStatus::Done(_))).count();
         let failed = jobs.iter().filter(|j| matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled)).count();
@@ -35,9 +38,11 @@ impl Render for DownloadsPage {
             let category = match &j.status { JobStatus::Queued | JobStatus::Running => 1, JobStatus::Done(_) => 2, _ => 3 };
             (filter == 0 || filter == category) && (query.is_empty() || j.video.title.to_lowercase().contains(&query) || j.video.channel_name.to_lowercase().contains(&query))
         });
+        let matches=visible.clone().count();
+        self.page=self.page.min(matches.saturating_sub(1)/100);
         let mut shown = 0;
         let mut list = div().flex().flex_col().gap_3();
-        for j in visible {
+        for j in visible.skip(self.page*100).take(100) {
             shown += 1;
             let id = j.id;
             let vid = j.video.id.clone();
@@ -93,13 +98,19 @@ impl Render for DownloadsPage {
                     .when(!running, |d| d.child(icon_button(SharedString::from(format!("dlr-{id}")), "x", cx).on_click(move |_, _, cx| crate::downloads::remove(id, cx)))),
             );
         }
+        if matches>100 {
+            let mut pages=div().flex().flex_wrap().items_center().gap_2().child(div().text_sm().text_color(p.text2).child(format!("Page {} of {} · {matches} matching",self.page+1,matches.div_ceil(100))));
+            if self.page>0 {pages=pages.child(pill("dl-prev",Some("chevron-left"),"Previous",cx).on_click(cx.listener(|this,_,_,cx|{this.page=this.page.saturating_sub(1);this.scroll=ScrollHandle::new();cx.notify();})));}
+            if (self.page+1)*100<matches {pages=pages.child(pill("dl-next",Some("chevron-right"),"Next",cx).on_click(cx.listener(|this,_,_,cx|{this.page+=1;this.scroll=ScrollHandle::new();cx.notify();})));}
+            list=list.child(pages);
+        }
         if shown == 0 {
             list = list.child(empty_state("download", if jobs.is_empty() { "No downloads yet" } else { "No matching downloads" }, "", cx));
         }
         let mut filters = div().flex().flex_wrap().items_center().gap_2();
         for (i,label,n) in [(0u8,"All",jobs.len()),(1,"Active",active),(2,"Completed",done),(3,"Failed / cancelled",failed)] {
             filters = filters.child(chip(SharedString::from(format!("dl-filter-{i}")),format!("{label} ({n})"),filter == i,cx)
-                .on_click(cx.listener(move |this, _, _, cx| { this.filter=i; cx.notify(); })));
+                .on_click(cx.listener(move |this, _, _, cx| { this.filter=i; this.page=0; cx.notify(); })));
         }
         let dir2 = dir.clone();
         page_scroll("dl-scroll", &self.scroll).child(

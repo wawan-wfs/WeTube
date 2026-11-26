@@ -15,7 +15,9 @@ enum HistTab {
 pub struct HistoryPage {
     filter: Entity<InputState>,
     scroll: ScrollHandle,
-    limit: usize,
+    cursor: Option<store::HistoryCursor>,
+    previous: Vec<Option<store::HistoryCursor>>,
+    last_filter: String,
     tab: HistTab,
     /// the signed-in account's YouTube watch history
     yt: Option<Load<Vec<crate::api::types::VideoItem>>>,
@@ -35,7 +37,9 @@ impl HistoryPage {
         let mut s = Self {
             filter,
             scroll: ScrollHandle::new(),
-            limit: 100,
+            cursor: None,
+            previous: Vec::new(),
+            last_filter: String::new(),
             tab: if signed_in { HistTab::Account } else { HistTab::Device },
             yt: None,
             yt_cont: None,
@@ -74,8 +78,8 @@ impl HistoryPage {
                 if let Ok(page) = res {
                     t.yt_cont = page.continuation;
                     if let Some(Load::Ready(list)) = &mut t.yt {
-                        let seen: std::collections::HashSet<String> = list.iter().map(|v| v.id.clone()).collect();
-                        list.extend(only_videos(page.items).filter(|v| !seen.contains(&v.id)));
+                        let mut seen: std::collections::HashSet<String> = list.iter().map(|v| v.id.clone()).collect();
+                        list.extend(only_videos(page.items).filter(|v| seen.insert(v.id.clone())));
                     }
                 }
                 cx.notify();
@@ -192,9 +196,11 @@ impl Render for HistoryPage {
         let p = pal(cx);
         let s = store::settings_snapshot();
         let q = self.filter.read(cx).value().to_string();
+        if q != self.last_filter {
+            self.last_filter=q.clone(); self.cursor=None; self.previous.clear();
+        }
         if near_bottom(&self.scroll, 800.0) {
             match self.tab {
-                HistTab::Device => self.limit += 100,
                 HistTab::Account if !self.yt_loading_more && self.yt_cont.is_some() => {
                     self.yt_loading_more = true;
                     cx.defer_in_entity(|t, cx| t.load_more_yt(cx));
@@ -204,7 +210,7 @@ impl Render for HistoryPage {
         }
         let width = content_width(cx).min(px(1100.));
         let signed_in = crate::api::auth::signed_in();
-        let mut tabs = div().flex().gap_2();
+        let mut tabs = div().flex().flex_wrap().gap_2();
         let tab_defs: Vec<(HistTab, &str)> = if signed_in {
             vec![(HistTab::Account, "YouTube history"), (HistTab::Device, "On this device"), (HistTab::Searches, "Searches")]
         } else {
@@ -216,7 +222,11 @@ impl Render for HistoryPage {
                 cx.notify();
             })));
         }
-        let entries = if self.tab == HistTab::Device { store::history_list(&q, self.limit) } else { Vec::new() };
+        let (entries,next,page_error) = if self.tab == HistTab::Device {
+            match store::history_page(&q,self.cursor.as_ref(),100) {
+                Ok((rows,next))=>(rows,next,false),Err(_)=>(Vec::new(),None,true),
+            }
+        }else{(Vec::new(),None,false)};
         let mut list = div().flex().flex_col().gap_4().flex_1().min_w_0();
         let mut cur_day = String::new();
         for h in &entries {
@@ -246,14 +256,32 @@ impl Render for HistoryPage {
             list = self.account_list(&q, cx);
         } else if self.tab == HistTab::Searches {
             list = self.search_list(&q, cx);
+        } else if page_error {
+            list=list.child(empty_state("history","Could not read local history","Your database has not been changed.",cx));
         } else if entries.is_empty() {
             list = list.child(empty_state("history", if q.is_empty() { "Your watch history is empty" } else { "No matches" }, "", cx));
         }
+        if self.tab==HistTab::Device {
+            let mut controls=div().flex().flex_wrap().items_center().gap_3().p_3().rounded_lg().bg(p.surface);
+            controls=controls.child(div().text_sm().text_color(p.text2).child(format!("Page {} · {} videos",self.previous.len()+1,entries.len())));
+            if !self.previous.is_empty() {
+                controls=controls.child(pill("history-previous",Some("chevron-left"),"Newer",cx).on_click(cx.listener(|this,_,_,cx|{
+                    if let Some(previous)=this.previous.pop(){this.cursor=previous;this.scroll=ScrollHandle::new();cx.notify();}
+                })));
+            }
+            if let Some(next)=next {
+                controls=controls.child(pill("history-next",Some("chevron-right"),"Older",cx).on_click(cx.listener(move |this,_,_,cx|{
+                    this.previous.push(this.cursor.clone());this.cursor=Some(next.clone());this.scroll=ScrollHandle::new();cx.notify();
+                })));
+            }
+            list=list.child(controls);
+        }
+        let compact=width<px(800.);
         let side = div()
             .flex()
             .flex_col()
             .gap_4()
-            .w(px(320.))
+            .w(if compact {(width-px(48.)).max(px(240.))}else{px(320.)})
             .flex_none()
             .child(div().flex().items_center().gap_2().border_b_1().border_color(p.border).pb_1().child(icon("search").size_4().text_color(p.text2)).child(Input::new(&self.filter).appearance(false).cleanable(true)))
             .child(
@@ -287,7 +315,7 @@ impl Render for HistoryPage {
                     .gap_4()
                     .child(workspace_header("History", "Review and manage your watch and search history", "history", cx))
                     .child(tabs)
-                    .child(div().flex().gap_8().child(list).child(side)),
+                    .child(div().flex().gap_8().when(compact,|d|d.flex_col()).child(side).child(list)),
             ),
         )
     }

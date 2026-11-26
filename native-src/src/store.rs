@@ -385,6 +385,7 @@ pub fn data_dir() -> PathBuf {
 }
 
 const LIBRARY_INDEXES: &str = "CREATE INDEX IF NOT EXISTS wetube_history_recent ON history(watched_at DESC, video_id);
+    CREATE INDEX IF NOT EXISTS wetube_history_cursor ON history(watched_at DESC, video_id DESC);
     CREATE INDEX IF NOT EXISTS wetube_playlist_order ON playlist_items(playlist_id, position, video_id);
     CREATE INDEX IF NOT EXISTS wetube_saved_recent ON saved_playlists(added_at DESC, playlist_id);
     CREATE INDEX IF NOT EXISTS wetube_search_recent ON search_history(at DESC, query);";
@@ -764,6 +765,59 @@ pub fn history_list(query: &str, limit: usize) -> Vec<HistoryEntry> {
     .filter(|h| q.is_empty() || h.video.title.to_lowercase().contains(&q) || h.video.channel_name.to_lowercase().contains(&q))
     .take(limit)
     .collect()
+}
+
+/// Stable descending keyset cursor for local watch history. No OFFSET scan.
+pub type HistoryCursor=(i64,String);
+pub fn history_page(query:&str,before:Option<&HistoryCursor>,limit:usize)->Result<(Vec<HistoryEntry>,Option<HistoryCursor>)> {
+    history_page_from(&db().lock(),query,before,limit)
+}
+fn history_page_from(conn:&Connection,query:&str,before:Option<&HistoryCursor>,limit:usize)->Result<(Vec<HistoryEntry>,Option<HistoryCursor>)> {
+    let limit=limit.clamp(1,200);
+    let q=query.to_lowercase();
+    let start=(i64::MAX,"\u{10ffff}".to_string());
+    let (at,id)=before.unwrap_or(&start);
+    let mut st=conn.prepare_cached("SELECT video_id,json,watched_at,progress,duration FROM history
+        WHERE (watched_at,video_id)<(?1,?2) ORDER BY watched_at DESC,video_id DESC")?;
+    let mut rows=st.query(params![at,id])?;
+    let mut page=Vec::with_capacity(limit);
+    let mut cursor=None;
+    while let Some(row)=rows.next()? {
+        let id:String=row.get(0)?;
+        let raw:String=row.get(1)?;
+        let Ok(video)=serde_json::from_str::<VideoItem>(&raw) else{continue;};
+        if video.id!=id {continue;}
+        if !q.is_empty()&&!video.title.to_lowercase().contains(&q)&&!video.channel_name.to_lowercase().contains(&q){continue;}
+        if page.len()==limit {return Ok((page,cursor));}
+        let watched_at:i64=row.get(2)?;
+        let progress:f64=row.get(3)?;
+        let duration:f64=row.get(4)?;
+        cursor=Some((watched_at,id));
+        page.push(HistoryEntry{video,watched_at,progress:if progress.is_finite(){progress.max(0.0)}else{0.0},duration:if duration.is_finite(){duration.max(0.0)}else{0.0}});
+    }
+    Ok((page,None))
+}
+#[cfg(test)]
+mod history_cursor_tests {
+    use super::*;
+    #[test]
+    fn keyset_ties_filter_and_boundaries(){
+        let c=Connection::open_in_memory().unwrap();
+        c.execute_batch(TABLES).unwrap();c.execute_batch(LIBRARY_INDEXES).unwrap();
+        for i in 0..505 {
+            let id=format!("{i:011}");
+            let v=VideoItem{id:id.clone(),title:if i%2==0{"Épisode".into()}else{"Other".into()},..Default::default()};
+            c.execute("INSERT INTO history(video_id,json,watched_at) VALUES(?1,?2,?3)",params![id,serde_json::to_string(&v).unwrap(),i/3]).unwrap();
+        }
+        let mut before=None;let mut ids=std::collections::HashSet::new();
+        loop {
+            let (page,next)=history_page_from(&c,"épisode",before.as_ref(),50).unwrap();
+            assert!(page.len()<=50);
+            for e in page{assert!(ids.insert(e.video.id));}
+            if next.is_none(){break;}before=next;
+        }
+        assert_eq!(ids.len(),253);
+    }
 }
 
 /// Indexed point lookup, without reading the entire history.

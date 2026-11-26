@@ -80,6 +80,7 @@ pub fn start_many(videos: Vec<VideoItem>, cx: &mut App) {
 }
 
 pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
+    if !crate::wetube_session::valid_id(&video.id) { toast(cx, "Invalid video ID"); return; }
     // First download: ask where to save (once), like a browser does.
     if !store::settings_snapshot().download_dir_chosen {
         let rx = cx.prompt_for_paths(PathPromptOptions {
@@ -105,6 +106,17 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         return;
     }
     let fmt = format.unwrap_or_else(|| store::settings_snapshot().download_format.clone());
+    if !FORMATS.iter().any(|(key, _)| *key == fmt.as_str()) && fmt != "single" {
+        toast(cx, "Unsupported download format"); return;
+    }
+    let (duplicate, active_count) = {
+        let jobs = cx.default_global::<Downloads>().jobs.lock();
+        let active = |j: &&Job| matches!(j.status, JobStatus::Queued | JobStatus::Running);
+        (jobs.iter().filter(active).any(|j| j.video.id == video.id && j.format == fmt),
+         jobs.iter().filter(active).count())
+    };
+    if duplicate { toast(cx, "This video and format is already queued"); return; }
+    if active_count >= 500 { toast(cx, "Download queue is full (500 active jobs)"); return; }
     // without yt-dlp only 360p (one combined stream) or audio can be saved
     if fmt != "audio" && fmt != "single" && streams::ytdlp_path().is_none() {
         if YTDLP_FETCHING.load(Ordering::SeqCst) {
@@ -181,20 +193,15 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
                 update(&|j| j.status = JobStatus::Cancelled);
                 return;
             }
-            let running = jobs2.lock().iter().filter(|j| j.status == JobStatus::Running).count();
-            if running < 3 {
-                break;
-            }
+            if claim_download_slot(&mut jobs2.lock(), jid) { break; }
             std::thread::sleep(std::time::Duration::from_millis(400));
         }
-        update(&|j| j.status = JobStatus::Running);
         let res = run_job(&job, &cancel, &|p, detail| {
             update(&|j| {
-                j.progress = p;
-                j.detail = detail.to_string();
+                if p.is_finite() { j.progress = p.clamp(0.0, 1.0); }
+                j.detail = detail.chars().filter(|c| !c.is_control()).take(240).collect();
             })
-        })
-        .map(|path| resolve_output(&path, &job.video.id).unwrap_or(path));
+        });
         match res {
             Ok(path) => update(&|j| {
                 j.status = JobStatus::Done(path.clone());
@@ -208,6 +215,20 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         }
     });
     ensure_ticking(cx);
+}
+
+/// Atomic FIFO admission while holding the job-list lock.
+fn claim_download_slot(jobs: &mut [Job], id: u64) -> bool {
+    if jobs.iter().filter(|j| j.status == JobStatus::Running).count() >= 3 { return false; }
+    let Some(next) = jobs.iter_mut().filter(|j| j.status == JobStatus::Queued && !j.cancel.load(Ordering::SeqCst)).min_by_key(|j| j.id) else { return false };
+    if next.id != id { return false; }
+    next.status = JobStatus::Running;
+    true
+}
+pub fn retry(id: u64, cx: &mut App) {
+    let job = cx.default_global::<Downloads>().jobs.lock().iter()
+        .find(|j| j.id == id && matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled)).cloned();
+    if let Some(j) = job { start(j.video, Some(j.format), cx); }
 }
 
 fn ensure_ticking(cx: &mut App) {
@@ -330,7 +351,7 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
         }
         // --print makes yt-dlp quiet, so progress is asked for explicitly in a fixed format.
         // Fragments and chunks download in parallel, which is much faster than one stream.
-        cmd.args(["--newline", "--no-warnings", "--no-playlist", "--progress", "--progress-delta", "0.4"])
+        cmd.args(["--newline", "--no-warnings", "--no-playlist", "--progress", "--progress-delta", "0.4", "--socket-timeout", "20", "--retries", "2"])
             .args(["--progress-template", "download:[dl] %(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"])
             .args(["-N", "8", "--http-chunk-size", "10M", "-f", fmt, "-o"])
             .arg(match name {
@@ -385,7 +406,8 @@ fn ytdlp_run(bin: &str, dir: &std::path::Path, url: &str, fmt: &str, s: &store::
         if !status.success() {
             anyhow::bail!("{}", ytdlp_failure(status.code(), &err));
         }
-        Ok(if final_path.is_empty() { dir.to_string_lossy().into_owned() } else { final_path })
+        anyhow::ensure!(!final_path.is_empty(), "Download tool did not report a completed file");
+        verify_output(dir, &final_path)
     }
 }
 
@@ -436,13 +458,28 @@ fn native_download(job: &Job, dir: &std::path::Path, cancel: &AtomicBool, progre
         (m.clone(), "mp4")
     };
     let path = dir.join(format!("{} [{}].{ext}", sanitize(&info.title), job.video.id));
-    let mut f = std::fs::File::create(&path)?;
-    crate::api::http::download_to(&fmt.url, &mut f, |done, total| {
-        let p = total.map(|t| done as f32 / t as f32).unwrap_or(0.0);
-        progress(p, &format!("{:.1} MB", done as f64 / 1e6));
-        !cancel.load(Ordering::SeqCst)
-    })?;
-    Ok(path.to_string_lossy().into_owned())
+    anyhow::ensure!(!path.exists(), "Destination already exists");
+    let partial = path.with_extension(format!("{ext}.part-{}", job.id));
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&partial)?;
+    let result = (|| -> anyhow::Result<()> {
+        crate::api::http::download_to(&fmt.url, &mut f, |done, total| {
+            let p = total.filter(|t| *t > 0).map(|t| done as f32 / t as f32).unwrap_or(0.0);
+            progress(p, &format!("{:.1} MB", done as f64 / 1e6));
+            !cancel.load(Ordering::SeqCst)
+        })?;
+        anyhow::ensure!(!cancel.load(Ordering::SeqCst), "cancelled");
+        anyhow::ensure!(f.metadata()?.len() > 0, "Empty download");
+        f.sync_all()?;
+        Ok(())
+    })();
+    drop(f);
+    let result = result.and_then(|_| {
+        // Atomic non-overwriting commit on filesystems supporting hard links.
+        std::fs::hard_link(&partial, &path)?;
+        verify_output(dir, &path.to_string_lossy())
+    });
+    let _ = std::fs::remove_file(&partial);
+    result
 }
 
 pub fn cancel(id: u64, cx: &mut App) {
@@ -644,6 +681,36 @@ pub fn resolve_output(path: &str, video_id: &str) -> Option<String> {
         .filter_map(|e| Some((e.metadata().ok()?.len(), e.path())))
         .max_by_key(|(len, _)| *len)
         .map(|(_, p)| p.to_string_lossy().into_owned())
+}
+
+/// Require a nonempty regular file contained by the selected directory.
+fn verify_output(dir: &std::path::Path, path: &str) -> anyhow::Result<String> {
+    let root = std::fs::canonicalize(dir)?;
+    let full = std::fs::canonicalize(path)?;
+    anyhow::ensure!(full.starts_with(&root) && full != root, "Output is outside the download directory");
+    let meta = std::fs::metadata(&full)?;
+    anyhow::ensure!(meta.is_file() && meta.len() > 0, "Output is not a nonempty file");
+    Ok(path.to_string())
+}
+#[cfg(test)]
+mod wetube_download_regression {
+    use super::*;
+    fn job(id: u64) -> Job {
+        Job { id, video: VideoItem::default(), format: "audio".into(), status: JobStatus::Queued, progress: 0.0, detail: String::new(), cancel: Arc::new(AtomicBool::new(false)) }
+    }
+    #[test] fn fifo_and_capacity() {
+        let mut jobs=vec![job(1),job(2),job(3),job(4)];
+        assert!(!claim_download_slot(&mut jobs,2));
+        for i in 1..=3 { assert!(claim_download_slot(&mut jobs,i)); }
+        assert!(!claim_download_slot(&mut jobs,4));
+        jobs[0].status=JobStatus::Done("file".into());
+        assert!(claim_download_slot(&mut jobs,4));
+    }
+    #[test] fn cancelled_waiter_does_not_block() {
+        let mut jobs=vec![job(1),job(2)];
+        jobs[0].cancel.store(true,Ordering::SeqCst);
+        assert!(claim_download_slot(&mut jobs,2));
+    }
 }
 
 /// Opens a downloaded file with the system's default player.

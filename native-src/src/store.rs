@@ -384,6 +384,11 @@ pub fn data_dir() -> PathBuf {
     .clone()
 }
 
+const LIBRARY_INDEXES: &str = "CREATE INDEX IF NOT EXISTS wetube_history_recent ON history(watched_at DESC, video_id);
+    CREATE INDEX IF NOT EXISTS wetube_playlist_order ON playlist_items(playlist_id, position, video_id);
+    CREATE INDEX IF NOT EXISTS wetube_saved_recent ON saved_playlists(added_at DESC, playlist_id);
+    CREATE INDEX IF NOT EXISTS wetube_search_recent ON search_history(at DESC, query);";
+
 const TABLES: &str = "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
      CREATE TABLE IF NOT EXISTS subscriptions (channel_id TEXT PRIMARY KEY, name TEXT NOT NULL, avatar TEXT, added_at INTEGER NOT NULL);
      CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color INTEGER NOT NULL);
@@ -489,6 +494,10 @@ fn db() -> &'static Mutex<Connection> {
         let conn = open_checked(&data_dir().join("streamtube.db"));
         conn.execute_batch(&format!("PRAGMA journal_mode=WAL; {TABLES}"))
         .expect("init db");
+        conn.busy_timeout(std::time::Duration::from_secs(3)).expect("db busy timeout");
+        if let Err(e) = conn.execute_batch(LIBRARY_INDEXES) {
+            eprintln!("WeTube: could not create library indexes: {e}");
+        }
         // built-in playlists
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM playlists WHERE protected=1", [], |r| r.get(0))
@@ -698,6 +707,8 @@ pub fn history_progress(video_id: &str, progress: f64, duration: f64) {
     if !settings_snapshot().history_enabled {
         return;
     }
+    if !progress.is_finite() || !duration.is_finite() || progress < 0.0 || duration < 0.0 { return; }
+    let progress = if duration > 0.0 { progress.min(duration) } else { progress.min(604800.0) };
     let _ = db().lock().execute(
         "UPDATE history SET progress=?2, duration=?3 WHERE video_id=?1",
         params![video_id, progress, duration],
@@ -707,7 +718,7 @@ pub fn history_progress(video_id: &str, progress: f64, duration: f64) {
 pub fn history_list(query: &str, limit: usize) -> Vec<HistoryEntry> {
     let conn = db().lock();
     let mut st = conn
-        .prepare("SELECT json, watched_at, progress, duration FROM history ORDER BY watched_at DESC")
+        .prepare("SELECT json, watched_at, progress, duration FROM history ORDER BY watched_at DESC, video_id")
         .unwrap();
     let q = query.to_lowercase();
     st.query_map([], |r| {
@@ -722,6 +733,17 @@ pub fn history_list(query: &str, limit: usize) -> Vec<HistoryEntry> {
     .filter(|h| q.is_empty() || h.video.title.to_lowercase().contains(&q) || h.video.channel_name.to_lowercase().contains(&q))
     .take(limit)
     .collect()
+}
+
+/// Indexed point lookup, without reading the entire history.
+pub fn history_position(id: &str) -> Option<(f64, f64)> {
+    db().lock().query_row("SELECT progress, duration FROM history WHERE video_id=?1", [id],
+        |r| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?)))
+        .optional().ok().flatten()
+        .filter(|(p,d)| p.is_finite() && d.is_finite() && *p >= 0.0 && *d >= 0.0)
+}
+pub fn history_count() -> usize {
+    db().lock().query_row("SELECT COUNT(*) FROM history", [], |r| r.get::<_, i64>(0)).unwrap_or(0).max(0) as usize
 }
 
 /// video_id -> (progress, duration)
@@ -871,7 +893,7 @@ pub fn playlist_delete(id: i64) {
 pub fn playlist_items(id: i64) -> Vec<VideoItem> {
     let conn = db().lock();
     let mut st = conn
-        .prepare("SELECT json FROM playlist_items WHERE playlist_id=?1 ORDER BY position")
+        .prepare("SELECT json FROM playlist_items WHERE playlist_id=?1 ORDER BY position, video_id")
         .unwrap();
     st.query_map([id], |r| r.get::<_, String>(0))
         .unwrap()
@@ -914,21 +936,86 @@ pub fn playlist_contains(id: i64, video_id: &str) -> bool {
 }
 
 /// Moves an item up (-1) or down (+1).
-pub fn playlist_move(id: i64, video_id: &str, delta: i64) {
-    let items = playlist_items(id);
-    let Some(idx) = items.iter().position(|v| v.id == video_id) else { return };
-    let target = idx as i64 + delta;
-    if target < 0 || target >= items.len() as i64 {
-        return;
+pub fn playlist_move(id: i64, video_id: &str, delta: i64) -> bool {
+    move_playlist_item(&mut db().lock(), id, video_id, delta).unwrap_or(false)
+}
+
+/// Transactional adjacent swap; duplicate legacy positions are normalized only when needed.
+fn move_playlist_item(conn: &mut Connection, id: i64, video_id: &str, delta: i64) -> rusqlite::Result<bool> {
+    if !matches!(delta, -1 | 1) { return Ok(false); }
+    let tx = conn.transaction()?;
+    let current: Option<i64> = tx.query_row(
+        "SELECT position FROM playlist_items WHERE playlist_id=?1 AND video_id=?2",
+        params![id, video_id], |r| r.get(0)).optional()?;
+    let Some(current) = current else { return Ok(false) };
+    let sql = if delta < 0 {
+        "SELECT video_id, position FROM playlist_items WHERE playlist_id=?1 AND (position, video_id) < (?2, ?3) ORDER BY position DESC, video_id DESC LIMIT 1"
+    } else {
+        "SELECT video_id, position FROM playlist_items WHERE playlist_id=?1 AND (position, video_id) > (?2, ?3) ORDER BY position, video_id LIMIT 1"
+    };
+    let next: Option<(String,i64)> = tx.query_row(sql, params![id, current, video_id],
+        |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let Some((other, target)) = next else { return Ok(false) };
+    let duplicates: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM playlist_items WHERE playlist_id=?1 AND position IN (?2, ?3) GROUP BY position HAVING COUNT(*)>1)",
+        params![id,current,target], |r| r.get(0))?;
+    if duplicates {
+        let mut ids: Vec<String> = {
+            let mut st = tx.prepare("SELECT video_id FROM playlist_items WHERE playlist_id=?1 ORDER BY position,video_id")?;
+            let rows = st.query_map([id], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let Some(i) = ids.iter().position(|v| v == video_id) else { return Ok(false) };
+        let Some(j) = ids.iter().position(|v| v == &other) else { return Ok(false) };
+        ids.swap(i,j);
+        for (i,vid) in ids.iter().enumerate() {
+            tx.execute("UPDATE playlist_items SET position=?3 WHERE playlist_id=?1 AND video_id=?2", params![id,vid,i as i64])?;
+        }
+    } else {
+        tx.execute("UPDATE playlist_items SET position=CASE WHEN video_id=?2 THEN ?4 ELSE ?5 END WHERE playlist_id=?1 AND video_id IN (?2,?3)",
+            params![id,video_id,other,target,current])?;
     }
-    let mut ids: Vec<String> = items.iter().map(|v| v.id.clone()).collect();
-    ids.swap(idx, target as usize);
-    let conn = db().lock();
-    for (i, vid) in ids.iter().enumerate() {
-        let _ = conn.execute(
-            "UPDATE playlist_items SET position=?3 WHERE playlist_id=?1 AND video_id=?2",
-            params![id, vid, i as i64],
-        );
+    tx.commit()?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod wetube_library_regression {
+    use super::*;
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(TABLES).unwrap();
+        conn.execute_batch(LIBRARY_INDEXES).unwrap();
+        for (id,pos) in [("a",0),("b",1),("c",2)] {
+            conn.execute("INSERT INTO playlist_items VALUES(1,?1,'{}',0,?2)",params![id,pos]).unwrap();
+        }
+        conn
+    }
+    fn ordered(c: &Connection) -> Vec<String> {
+        let mut s = c.prepare("SELECT video_id FROM playlist_items WHERE playlist_id=1 ORDER BY position,video_id").unwrap();
+        let rows=s.query_map([],|r|r.get(0)).unwrap();
+        rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    }
+    #[test] fn adjacent_move_and_boundaries() {
+        let mut c=setup();
+        assert!(!move_playlist_item(&mut c,1,"a",-1).unwrap());
+        assert!(!move_playlist_item(&mut c,1,"a",2).unwrap());
+        assert!(move_playlist_item(&mut c,1,"b",-1).unwrap());
+        assert_eq!(ordered(&c),vec!["b","a","c"]);
+        assert!(move_playlist_item(&mut c,1,"b",1).unwrap());
+        assert_eq!(ordered(&c),vec!["a","b","c"]);
+    }
+    #[test] fn duplicate_legacy_positions() {
+        let mut c=setup();
+        c.execute("UPDATE playlist_items SET position=0 WHERE playlist_id=1",[]).unwrap();
+        assert!(move_playlist_item(&mut c,1,"b",1).unwrap());
+        assert_eq!(ordered(&c),vec!["a","c","b"]);
+    }
+    #[test] fn rollback_on_database_failure() {
+        let mut c=setup();
+        c.execute_batch("CREATE TRIGGER reject_update BEFORE UPDATE ON playlist_items WHEN NEW.video_id='b' BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        assert!(move_playlist_item(&mut c,1,"a",1).is_err());
+        assert_eq!(ordered(&c),vec!["a","b","c"]);
     }
 }
 

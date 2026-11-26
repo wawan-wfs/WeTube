@@ -398,6 +398,11 @@ impl Render for LibraryPage {
                 .child(div().flex().flex_col().gap_3().p_5().rounded_xl().bg(p.surface).border_1().border_color(p.border)
                     .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child("Your library"))
                     .child(div().text_sm().text_color(p.text2).child(format!("{} local playlists · {} saved entries · on this device", pls.len(), total_videos)))
+                    .child(div().flex().flex_wrap().gap_2()
+                        .child(pill("lib-go-history", Some("history"), "Watch history", cx).on_click(|_, window, cx| navigate(Route::History, window, cx)))
+                        .child(pill("lib-new-playlist", Some("plus"), "New playlist", cx).on_click(|_, window, cx| {
+                            prompt_text("New playlist", "Playlist name", window, cx, |name, _, cx| { store::playlist_create(&name); cx.refresh_windows(); });
+                        })))
                     .child(div().flex().items_center().gap_2().child(icon("search").size_4().text_color(p.text2)).child(Input::new(&self.filter).appearance(false).cleanable(true)))
                     .child(div().text_xs().text_color(p.text2).child(format!("Showing {count} of {} playlists", pls.len())))
                     .child(div().flex().items_center().gap_2().child(pill("wetube-restore-queue", Some("list-video"), "Play saved queue", cx).on_click(|_, window, cx| {

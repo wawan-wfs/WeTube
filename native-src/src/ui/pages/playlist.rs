@@ -306,7 +306,8 @@ impl Render for PlaylistPage {
             Load::Ready(_) => {
                 let shown = self.visible(cx);
                 let sort = self.sort;
-                let mut bar = div().flex().items_center().gap_2().pb_3().mb_1().border_b_1().border_color(p.border);
+                let mut bar = div().flex().flex_wrap().items_center().gap_2().pb_3().mb_1().border_b_1().border_color(p.border)
+                    .child(div().text_xs().text_color(p.text2).child(format!("{} matching videos", shown.len())));
                 if let Some(f) = &self.filter {
                     bar = bar.child(
                         div()
@@ -369,12 +370,12 @@ impl Render for PlaylistPage {
                                     .flex()
                                     .flex_col()
                                     .child(icon_button(SharedString::from(format!("up-{i}")), "chevron-up", cx).size_7().on_click(cx.listener(move |this, _, _, cx| {
-                                        store::playlist_move(lid, &a, -1);
+                                        if !store::playlist_move(lid, &a, -1) { toast(cx, "Cannot move this item further"); }
                                         this.reload_local();
                                         cx.notify();
                                     })))
                                     .child(icon_button(SharedString::from(format!("dn-{i}")), "chevron-down", cx).size_7().on_click(cx.listener(move |this, _, _, cx| {
-                                        store::playlist_move(lid, &b, 1);
+                                        if !store::playlist_move(lid, &b, 1) { toast(cx, "Cannot move this item further"); }
                                         this.reload_local();
                                         cx.notify();
                                     }))),

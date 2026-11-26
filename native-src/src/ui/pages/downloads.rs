@@ -6,11 +6,15 @@ use crate::ui::*;
 
 pub struct DownloadsPage {
     scroll: ScrollHandle,
+    filter: u8,
+    search: Entity<gpui_kit::component::input::InputState>,
 }
 
 impl DownloadsPage {
-    pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
-        Self { scroll: ScrollHandle::new() }
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let search = cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx).placeholder("Search downloads"));
+        cx.observe(&search, |_, _, cx| cx.notify()).detach();
+        Self { scroll: ScrollHandle::new(), filter: 0, search }
     }
 }
 
@@ -20,8 +24,19 @@ impl Render for DownloadsPage {
         let jobs = cx.default_global::<Downloads>().jobs.lock().clone();
         let dir = store::settings_snapshot().download_dir.clone();
         let ytdlp = crate::api::streams::ytdlp_path().is_some();
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        let active = jobs.iter().filter(|j| matches!(j.status, JobStatus::Queued | JobStatus::Running)).count();
+        let done = jobs.iter().filter(|j| matches!(j.status, JobStatus::Done(_))).count();
+        let failed = jobs.iter().filter(|j| matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled)).count();
+        let filter = self.filter;
+        let visible = jobs.iter().rev().filter(|j| {
+            let category = match &j.status { JobStatus::Queued | JobStatus::Running => 1, JobStatus::Done(_) => 2, _ => 3 };
+            (filter == 0 || filter == category) && (query.is_empty() || j.video.title.to_lowercase().contains(&query) || j.video.channel_name.to_lowercase().contains(&query))
+        });
+        let mut shown = 0;
         let mut list = div().flex().flex_col().gap_3();
-        for j in jobs.iter().rev() {
+        for j in visible {
+            shown += 1;
             let id = j.id;
             let vid = j.video.id.clone();
             let (status, color): (String, Hsla) = match &j.status {
@@ -69,17 +84,23 @@ impl Render for DownloadsPage {
                             .child(icon_button(SharedString::from(format!("dlf-{id}")), "folder-open", cx).on_click(move |_, _, cx| crate::ui::app::reveal_in_folder(&p2, cx)))
                             .child(icon_button(SharedString::from(format!("dld-{id}")), "trash-2", cx).on_click(move |_, _, cx| crate::downloads::delete_file(id, cx)))
                     })
+                    .when(matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled), |d| d.child(pill(SharedString::from(format!("retry-{id}")), Some("refresh-cw"), "Retry", cx).on_click(move |_, _, cx| crate::downloads::retry(id, cx))))
                     .when(!running, |d| d.child(icon_button(SharedString::from(format!("dlr-{id}")), "x", cx).on_click(move |_, _, cx| crate::downloads::remove(id, cx)))),
             );
         }
-        if jobs.is_empty() {
-            list = list.child(empty_state("download", "No downloads yet", "", cx));
+        if shown == 0 {
+            list = list.child(empty_state("download", if jobs.is_empty() { "No downloads yet" } else { "No matching downloads" }, "", cx));
+        }
+        let mut filters = div().flex().flex_wrap().items_center().gap_2();
+        for (i,label,n) in [(0u8,"All",jobs.len()),(1,"Active",active),(2,"Completed",done),(3,"Failed / cancelled",failed)] {
+            filters = filters.child(chip(SharedString::from(format!("dl-filter-{i}")),format!("{label} ({n})"),filter == i,cx)
+                .on_click(cx.listener(move |this, _, _, cx| { this.filter=i; cx.notify(); })));
         }
         let dir2 = dir.clone();
         page_scroll("dl-scroll", &self.scroll).child(
             div().flex().justify_center().px_6().pt_6().pb_24().child(
                 div()
-                    .w(px(900.))
+                    .w_full().max_w(px(1100.))
                     .flex()
                     .flex_col()
                     .gap_4()
@@ -121,6 +142,10 @@ impl Render for DownloadsPage {
                         "Saving to {dir}. Engine: {}",
                         if ytdlp { "yt-dlp (all qualities, SponsorBlock chapters)" } else { "built-in (combined 360p/720p or audio only — install yt-dlp for more)" }
                     )))
+                    .child(div().flex().flex_col().gap_3().p_4().rounded_xl().border_1().border_color(p.border).bg(p.surface)
+                        .child(div().text_sm().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(format!("{active} active · {done} completed · {failed} failed or cancelled")))
+                        .child(gpui_kit::component::input::Input::new(&self.search).appearance(false).cleanable(true))
+                        .child(filters))
                     .child(list),
             ),
         )

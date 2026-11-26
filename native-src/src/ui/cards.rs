@@ -208,7 +208,7 @@ pub fn video_menu_items(v: &VideoItem) -> Vec<MenuItem> {
 }
 
 fn is_watched_in_history(id: &str) -> bool {
-    store::progress_map().contains_key(id)
+    store::history_position(id).is_some()
 }
 
 fn more_button(id: SharedString, v: &VideoItem, cx: &App) -> Stateful<Div> {

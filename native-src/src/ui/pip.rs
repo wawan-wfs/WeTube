@@ -22,12 +22,16 @@ pub fn open(cx: &mut App) {
             return;
         }
     }
-    let size = size(px(480.), px(270.));
+    let size = cx.primary_display().map(|d| {
+        let b = d.bounds();
+        let w = px(480.).min((b.size.width - px(48.)).max(px(256.))).min((b.size.height - px(96.)).max(px(144.)) * (16.0 / 9.0));
+        size(w, w * (9.0 / 16.0))
+    }).unwrap_or(size(px(480.), px(270.)));
     let origin = cx
         .primary_display()
         .map(|d| {
             let b = d.bounds();
-            point(b.origin.x + b.size.width - size.width - px(24.), b.origin.y + b.size.height - size.height - px(72.))
+            point((b.origin.x + b.size.width - size.width - px(24.)).max(b.origin.x), (b.origin.y + b.size.height - size.height - px(72.)).max(b.origin.y))
         })
         .unwrap_or(point(px(80.), px(80.)));
     let opts = WindowOptions {

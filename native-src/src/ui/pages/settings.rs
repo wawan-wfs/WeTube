@@ -922,11 +922,12 @@ impl SettingsPage {
                     toast(cx, "Playback recovery disabled and cleared");
                 } else {
                     store::update_settings(|s| s.wetube_recover_playback = true);
+                    crate::wetube_recovery::begin_playback();
                     toast(cx, "Playback recovery enabled");
                 }
                 cx.refresh_windows();
             }), cx))
-            .child(row("Clear playback recovery", "Does not delete saved queues or watch history.", pill("wetube-recovery-clear", Some("trash-2"), "Clear", cx).on_click(|_, _, cx| {
+            .child(row("Clear playback recovery", "Clears the checkpoint and pauses recovery writes until next playback. Saved queues and watch history are unchanged.", pill("wetube-recovery-clear", Some("trash-2"), "Clear", cx).on_click(|_, _, cx| {
                 if crate::wetube_recovery::clear() { toast(cx, "Recovery snapshot cleared"); } else { toast(cx, "Could not clear recovery snapshot"); }
                 cx.refresh_windows();
             }), cx))
@@ -1062,7 +1063,7 @@ impl SettingsPage {
     fn data(&self, cx: &mut Context<Self>) -> Div {
         let p = pal(cx);
         let n_subs = store::subscriptions().len();
-        let n_hist = store::progress_map().len();
+        let n_hist = store::history_count();
         let n_pl = store::playlists().len();
         div()
             .flex()

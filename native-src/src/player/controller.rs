@@ -322,11 +322,11 @@ impl Player {
                     && self.frame.is_some()
                     && self.last_prop_notify.elapsed() < std::time::Duration::from_millis(500);
                 match (name, val) {
-                    ("time-pos", PropValue::Double(t)) => {
+                    ("time-pos", PropValue::Double(t)) if t.is_finite() && t >= 0.0 && !self.loading && self.video.is_some() => {
                         self.time = t;
                         self.on_time(cx);
                     }
-                    ("duration", PropValue::Double(d)) => self.duration = d,
+                    ("duration", PropValue::Double(d)) if d.is_finite() && d >= 0.0 => self.duration = d,
                     ("pause", PropValue::Flag(b)) => self.paused = b,
                     ("eof-reached", PropValue::Flag(b)) => {
                         if b && !self.eof {
@@ -337,9 +337,9 @@ impl Player {
                     }
                     ("paused-for-cache", PropValue::Flag(b)) => self.buffering = b,
                     ("seeking", PropValue::Flag(b)) => self.seeking = b,
-                    ("demuxer-cache-time", PropValue::Double(c)) => self.cache_time = c,
-                    ("speed", PropValue::Double(s)) => self.speed = s,
-                    ("volume", PropValue::Double(v)) => self.volume = v,
+                    ("demuxer-cache-time", PropValue::Double(c)) if c.is_finite() && c >= 0.0 => self.cache_time = c,
+                    ("speed", PropValue::Double(s)) if s.is_finite() && s > 0.0 => self.speed = s,
+                    ("volume", PropValue::Double(v)) if v.is_finite() && v >= 0.0 => self.volume = v,
                     ("mute", PropValue::Flag(m)) => self.muted = m,
                     ("dwidth", PropValue::Double(w)) => self.video_size.0 = w,
                     ("dheight", PropValue::Double(h)) => self.video_size.1 = h,
@@ -505,6 +505,7 @@ impl Player {
         self.time = start.unwrap_or(0.0);
         self.last_progress_save = self.time;
         self.duration = video.duration_secs.unwrap_or(0) as f64;
+        crate::wetube_recovery::begin_playback();
         self.checkpoint_recovery();
         self.eof = false;
         self.segments.clear();
@@ -531,8 +532,8 @@ impl Player {
         let resume = if start.is_some() {
             start
         } else if s.resume_playback {
-            store::progress_map().get(&id).and_then(|(p, d)| {
-                (*p > 10.0 && (*d <= 0.0 || *p < d - 15.0)).then_some(*p)
+            store::history_position(&id).and_then(|(p, d)| {
+                (p > 10.0 && (d <= 0.0 || p < d - 15.0)).then_some(p)
             })
         } else {
             None
@@ -1062,6 +1063,15 @@ impl Player {
         self.video = None;
         self.streams = None;
         self.loading = false;
+        self.error = None;
+        self.paused = true;
+        self.buffering = false;
+        self.seeking = false;
+        self.eof = false;
+        self.time = 0.0;
+        self.duration = 0.0;
+        self.cache_time = 0.0;
+        self.boost = None;
         self.queue.clear();
         self.queue_pos = None;
         let _ = crate::wetube_recovery::clear();

@@ -7,7 +7,8 @@ const KEY: &str = "wetube_playback_recovery_v1";
 const LIMIT: usize = 200;
 const MAX_BYTES: usize = 256 * 1024;
 const MAX_POSITION: f64 = 604800.0;
-static LAST: Mutex<Option<String>> = Mutex::new(None);
+struct RecoveryState { last: Option<String>, suppressed: bool }
+static STATE: Mutex<RecoveryState> = Mutex::new(RecoveryState { last: None, suppressed: false });
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,10 +66,10 @@ fn decode(raw: &str) -> anyhow::Result<Snapshot> {
 pub fn save(video: &VideoItem, queue: &[VideoItem], selected: Option<usize>, t: f64) -> anyhow::Result<()> {
     if !crate::store::settings_snapshot().wetube_recover_playback { return Ok(()); }
     let raw = encode(&snapshot(video, queue, selected, t)?)?;
-    let mut last = LAST.lock().map_err(|_| anyhow::anyhow!("Recovery lock unavailable"))?;
-    if last.as_deref() == Some(raw.as_str()) { return Ok(()); }
+    let mut state = STATE.lock().map_err(|_| anyhow::anyhow!("Recovery lock unavailable"))?;
+    if state.suppressed || !crate::store::settings_snapshot().wetube_recover_playback || state.last.as_deref() == Some(raw.as_str()) { return Ok(()); }
     anyhow::ensure!(crate::store::wetube_kv_set(KEY, &raw), "Could not save playback recovery");
-    *last = Some(raw);
+    state.last = Some(raw);
     Ok(())
 }
 pub fn load() -> anyhow::Result<Option<Recovery>> {
@@ -82,10 +83,14 @@ pub fn load() -> anyhow::Result<Option<Recovery>> {
     Ok(Some(Recovery { queue, selected: s.selected, position: s.position }))
 }
 pub fn clear() -> bool {
-    let Ok(mut last) = LAST.lock() else { return false };
+    let Ok(mut state) = STATE.lock() else { return false };
     if !crate::store::wetube_kv_set(KEY, "") { return false; }
-    *last = None;
+    state.last = None;
+    state.suppressed = true;
     true
+}
+pub fn begin_playback() {
+    if let Ok(mut state) = STATE.lock() { state.suppressed = false; }
 }
 #[cfg(test)]
 mod tests {

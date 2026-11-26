@@ -214,7 +214,7 @@ fn transfer_resumable(
         anyhow::ensure!(validate_append(&v,offset,status,&content_range,&etag,length),"Resume validator or byte range changed");
         (Some(v.total),Some(v))
     } else if status==200 {
-        anyhow::ensure!(length.is_none_or(|n|n>0&&n<=MAX_BYTES),"Invalid media size");
+        anyhow::ensure!(length.is_some_and(|n|n>0&&n<=MAX_BYTES),"Native transfer requires a known positive content length");
         save(None)?;file.set_len(0)?;file.sync_all()?;offset=0;hash=Sha256::new();
         let v=length.filter(|_|strong_etag(&etag)).map(|n|Validator{version:2,itag,total:n,etag,committed:0,prefix_sha256:hex_digest(hash.clone().finalize())});
         (length,v)

@@ -57,6 +57,7 @@ mod win {
         fn OpenThread(access:u32,inherit:i32,id:u32)->Handle;
         fn ResumeThread(thread:Handle)->u32;
         fn GetProcessIdOfThread(thread:Handle)->u32;
+        fn QueryInformationJobObject(job:Handle,class:i32,info:*mut c_void,len:u32,ret:*mut u32)->i32;
     }
     #[repr(C)]
     struct ThreadEntry { size:u32, usage:u32, thread:u32, owner:u32, base:i32, delta:i32, flags:u32 }
@@ -92,6 +93,11 @@ mod win {
         if previous!=1 {return Err(io::Error::other("Unexpected primary thread suspend count"));}
         Ok(())
     }
+    #[repr(C)]
+    struct Accounting {
+        total_user:i64,total_kernel:i64,period_user:i64,period_kernel:i64,
+        faults:u32,total_processes:u32,active_processes:u32,terminated_processes:u32,
+    }
     pub struct Job(Handle);
     impl Job {
         pub fn new()->io::Result<Self> {
@@ -110,6 +116,11 @@ mod win {
             if unsafe{AssignProcessToJobObject(self.0,child.as_raw_handle().cast())}==0 {Err(io::Error::last_os_error())}else{Ok(())}
         }
         pub fn terminate(&self){unsafe{TerminateJobObject(self.0,1);}}
+        pub fn counts(&self)->io::Result<(u32,u32)>{
+            let mut info:Accounting=unsafe{std::mem::zeroed()};
+            if unsafe{QueryInformationJobObject(self.0,1,(&mut info as *mut Accounting).cast(),std::mem::size_of::<Accounting>() as u32,std::ptr::null_mut())}==0{return Err(io::Error::last_os_error());}
+            Ok((info.total_processes,info.active_processes))
+        }
     }
     impl Drop for Job {fn drop(&mut self){unsafe{CloseHandle(self.0);}}}
 }
@@ -123,6 +134,29 @@ mod tests {
         let mut child=ScopedChild::spawn(&mut cmd).unwrap();
         child.terminate();
         assert!(child.try_wait().unwrap().is_some());
+    }
+    #[test]
+    fn terminates_descendant_tree() {
+        let mut cmd=Command::new("cmd.exe");
+        // cmd runs a child ping, which remains alive until the Job is terminated.
+        cmd.args(["/d","/c","ping -n 60 127.0.0.1 >nul"]);
+        let mut child=ScopedChild::spawn(&mut cmd).unwrap();
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(8);
+        loop {
+            let (_,active)=child.job.counts().unwrap();
+            if active>=2{break;}
+            assert!(std::time::Instant::now()<deadline,"No descendant observed");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        child.terminate();
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(8);
+        loop {
+            let (total,active)=child.job.counts().unwrap();
+            assert!(total>=2);
+            if active==0{break;}
+            assert!(std::time::Instant::now()<deadline,"Descendants survived cancellation");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
     #[test]
     fn assigned_before_child_runs() {

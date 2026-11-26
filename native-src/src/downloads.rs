@@ -303,6 +303,7 @@ pub fn discard_partial(id:u64,cx:&mut App) {
     let Some(job)=job else{toast(cx,"Job is not eligible for cleanup");return;};
     let result=(||->anyhow::Result<()> {
         anyhow::ensure!(!job.directory.is_empty()&&valid_durable_id(&job.durable_id),"Missing job identity or original folder");
+        anyhow::ensure!(!crate::wetube_publish::has_intent(&job.durable_id)?,"Pending publication exists; Retry or Start over first");
         let root=std::fs::canonicalize(&job.directory)?;
         let p=root.join(format!(".wetube-{}.part",job.durable_id));
         match std::fs::symlink_metadata(&p) {
@@ -318,6 +319,35 @@ pub fn discard_partial(id:u64,cx:&mut App) {
         Ok(())
     })();
     match result {Ok(())=>toast(cx,"Native partial cleared. yt-dlp staging files are retained."),Err(e)=>toast(cx,e.to_string())}
+}
+/// Cleanup only unambiguously incomplete files directly under a terminal job's
+/// owned staging directory. Leave complete/unknown media, directories and links.
+pub fn clear_staging(id:u64,cx:&mut App) {
+    if history_blocked(cx){toast(cx,"Download journal is unreadable");return;}
+    let job=cx.default_global::<Downloads>().jobs.lock().iter()
+        .find(|j|j.id==id&&matches!(j.status,JobStatus::Failed(_)|JobStatus::Cancelled)).cloned();
+    let Some(job)=job else{toast(cx,"Job is not eligible for cleanup");return;};
+    let result=(||->anyhow::Result<usize>{
+        anyhow::ensure!(!job.directory.is_empty()&&valid_durable_id(&job.durable_id),"Missing job identity");
+        anyhow::ensure!(!crate::wetube_publish::has_intent(&job.durable_id)?,"Pending publication exists; Retry or Start over first");
+        let root=std::fs::canonicalize(&job.directory)?;
+        let stage=root.join(format!(".wetube-job-{}",job.durable_id));
+        if !stage.try_exists()?{return Ok(0);}
+        let meta=std::fs::symlink_metadata(&stage)?;
+        anyhow::ensure!(meta.is_dir()&&!meta.file_type().is_symlink()&&std::fs::canonicalize(&stage)?==stage,"Unsafe staging directory");
+        let mut removed=0;
+        for e in std::fs::read_dir(&stage)?{
+            let e=e?;
+            let p=e.path();let n=e.file_name().to_string_lossy().into_owned();
+            if !(n.ends_with(".part")||n.ends_with(".ytdl")){continue;}
+            let meta=std::fs::symlink_metadata(&p)?;
+            if !meta.is_file()||meta.file_type().is_symlink()||std::fs::canonicalize(&p)?.parent()!=Some(stage.as_path()){continue;}
+            std::fs::remove_file(&p)?;removed+=1;
+        }
+        let _=std::fs::remove_dir(&stage); // succeeds only if empty
+        Ok(removed)
+    })();
+    match result{Ok(n)=>toast(cx,format!("Removed {n} incomplete staging files; completed/unknown files kept")),Err(e)=>toast(cx,e.to_string())}
 }
 fn new_durable_id() -> String { format!("{:032x}",rand::random::<u128>()) }
 pub(crate) fn valid_durable_id(id:&str)->bool { id.len()==32 && id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) }

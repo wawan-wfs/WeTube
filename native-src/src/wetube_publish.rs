@@ -87,6 +87,7 @@ pub fn publish(job:&Job,dir:&Path,source:&Path,target:&Path,cancel:&AtomicBool)-
     ensure!(store::wetube_kv_set(&key(&job.durable_id),&serde_json::to_string(&i)?),"Could not persist publication intent");
     finish(&root,&i,cancel)
 }
+pub fn has_intent(id:&str)->Result<bool>{Ok(store::wetube_kv_read(&key(id))?.is_some_and(|v|!v.is_empty()))}
 pub fn forget(id:&str){if valid_durable_id(id){let _=store::wetube_kv_set(&key(id),"");}}
 #[cfg(test)]
 mod tests {

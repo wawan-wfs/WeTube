@@ -495,6 +495,7 @@ fn db() -> &'static Mutex<Connection> {
         conn.execute_batch(&format!("PRAGMA journal_mode=WAL; {TABLES}"))
         .expect("init db");
         conn.busy_timeout(std::time::Duration::from_secs(3)).expect("db busy timeout");
+        conn.pragma_update(None,"synchronous","FULL").expect("durable SQLite commits");
         if let Err(e) = conn.execute_batch(LIBRARY_INDEXES) {
             eprintln!("WeTube: could not create library indexes: {e}");
         }

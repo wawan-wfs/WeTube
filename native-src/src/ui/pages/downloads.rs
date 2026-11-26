@@ -89,6 +89,7 @@ impl Render for DownloadsPage {
                     })
                     .when(matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled), |d| d.child(pill(SharedString::from(format!("retry-{id}")), Some("refresh-cw"), "Retry", cx).on_click(move |_, _, cx| crate::downloads::retry(id, cx))))
                     .when(matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled), |d| d.child(pill(SharedString::from(format!("restart-{id}")), Some("rotate-ccw"), "Start over", cx).on_click(move |_,window,cx| crate::ui::app::confirm("Start a new transfer?", "Existing partial files will remain in the original folder. The next attempt starts from zero.", "Start over", window,cx,move |_,cx| crate::downloads::restart(id,cx)))))
+                    .when(matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled) && !j.directory.is_empty(), |d| d.child(pill(SharedString::from(format!("discard-{id}")), Some("trash-2"), "Clear partial", cx).on_click(move |_,window,cx| crate::ui::app::confirm("Clear native partial?", "This removes the incomplete native file for this job only. yt-dlp staging is retained.", "Clear partial", window,cx,move |_,cx| crate::downloads::discard_partial(id,cx)))))
                     .when(!running, |d| d.child(icon_button(SharedString::from(format!("dlr-{id}")), "x", cx).on_click(move |_, _, cx| crate::downloads::remove(id, cx)))),
             );
         }

@@ -147,12 +147,19 @@ fn transfer_resumable(
     use crate::wetube_resume::{Validator,MAX_BYTES,CHECKPOINT_BYTES,strong_etag,validate_append,hex_digest};
     use sha2::{Digest,Sha256};
     use std::io::{Seek,SeekFrom,Write};
+    let mut options=std::fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
     let mut file=match std::fs::symlink_metadata(partial) {
         Ok(meta)=>{
             anyhow::ensure!(meta.is_file() && !meta.file_type().is_symlink(),"Unsafe partial file");
-            std::fs::OpenOptions::new().read(true).write(true).open(partial)?
+            options.open(partial)?
         }
-        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(partial)?,
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>options.create_new(true).open(partial)?,
         Err(e)=>return Err(e.into()),
     };
     let existing=file.metadata()?.len();
@@ -268,4 +275,108 @@ pub fn urldecode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+
+#[cfg(test)]
+mod resume_http_tests {
+    use super::*;
+    use crate::wetube_resume::Validator;
+    use std::{io::{BufRead,BufReader,Write},net::TcpListener,path::PathBuf,cell::RefCell};
+    struct FixtureDir(PathBuf);
+    impl FixtureDir {
+        fn new()->Self {
+            let p=std::env::temp_dir().join(format!("wetube-range-test-{:032x}",rand::random::<u128>()));
+            std::fs::create_dir(&p).unwrap();Self(p)
+        }
+    }
+    impl Drop for FixtureDir {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+    fn serve(body:Vec<u8>,expected:Option<u64>,bad_range:bool)->(String,std::thread::JoinHandle<()>) {
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url=format!("http://{}/fixture",listener.local_addr().unwrap());
+        let handle=std::thread::spawn(move||{
+            let deadline=std::time::Instant::now()+Duration::from_secs(8);
+            let mut sock=loop {
+                match listener.accept(){
+                    Ok((s,_))=>break s,
+                    Err(e) if e.kind()==std::io::ErrorKind::WouldBlock && std::time::Instant::now()<deadline=>std::thread::sleep(Duration::from_millis(10)),
+                    Err(e)=>panic!("fixture accept: {e}"),
+                }
+            };
+            sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            sock.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut headers=String::new();
+            {
+                let mut reader=BufReader::new(&mut sock);
+                loop {
+                    let mut line=String::new();
+                    if reader.read_line(&mut line).unwrap()==0||line=="\r\n"{break;}
+                    headers.push_str(&line.to_ascii_lowercase());
+                }
+            }
+            if let Some(off)=expected {
+                assert!(headers.contains(&format!("range: bytes={off}-")));
+                assert!(headers.contains("if-range: \"fixture-v1\""));
+                let payload=&body[off as usize..];
+                let range_start=if bad_range{off-1}else{off};
+                let head=format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nETag: \"fixture-v1\"\r\nConnection: close\r\n\r\n",payload.len(),range_start,body.len()-1,body.len());
+                sock.write_all(head.as_bytes()).unwrap();
+                let _=sock.write_all(payload);
+            } else {
+                assert!(!headers.contains("\r\nrange:"));
+                let head=format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"fixture-v1\"\r\nConnection: close\r\n\r\n",body.len());
+                sock.write_all(head.as_bytes()).unwrap();
+                let _=sock.write_all(&body);
+            }
+        });
+        (url,handle)
+    }
+    fn local_agent()->ureq::Agent {
+        ureq::Agent::config_builder().proxy(None).http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(10))).build().into()
+    }
+    fn payload()->Vec<u8>{(0..(1024*1024)).map(|i|(i%251) as u8).collect()}
+    fn interrupted(p:&std::path::Path,data:&[u8])->Validator {
+        let (url,server)=serve(data.to_vec(),None,false);
+        let saved=RefCell::new(None);
+        let result=transfer_resumable(&local_agent(),&url,p,18,None,
+            |v|{*saved.borrow_mut()=v.cloned();Ok(())},
+            |n,_|n<128*1024);
+        server.join().unwrap();
+        assert!(result.is_err());
+        let v=saved.into_inner().unwrap();
+        assert!(v.committed>=128*1024&&v.committed<data.len() as u64);
+        assert_eq!(std::fs::metadata(p).unwrap().len(),v.committed);
+        v
+    }
+    #[test]
+    fn real_http_cancel_resume_trims_crash_tail() {
+        let dir=FixtureDir::new();let p=dir.0.join("partial");let data=payload();
+        let v=interrupted(&p,&data);
+        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(b"uncommitted").unwrap();
+        let (url,server)=serve(data.clone(),Some(v.committed),false);
+        transfer_resumable(&local_agent(),&url,&p,18,Some(v),|_|Ok(()),|_,_|true).unwrap();
+        server.join().unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(),data);
+    }
+    #[test]
+    fn real_http_wrong_range_rejected_without_append() {
+        let dir=FixtureDir::new();let p=dir.0.join("partial");let data=payload();
+        let v=interrupted(&p,&data);let before=std::fs::read(&p).unwrap();
+        let (url,server)=serve(data,Some(v.committed),true);
+        assert!(transfer_resumable(&local_agent(),&url,&p,18,Some(v),|_|Ok(()),|_,_|true).is_err());
+        server.join().unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(),before);
+    }
+    #[test]
+    fn real_http_corrupt_prefix_restarts() {
+        let dir=FixtureDir::new();let p=dir.0.join("partial");let data=payload();
+        let v=interrupted(&p,&data);
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().write_all(b"corrupt").unwrap();
+        let (url,server)=serve(data.clone(),None,false);
+        transfer_resumable(&local_agent(),&url,&p,18,Some(v),|_|Ok(()),|_,_|true).unwrap();
+        server.join().unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(),data);
+    }
 }

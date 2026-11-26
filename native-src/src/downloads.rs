@@ -288,6 +288,31 @@ pub fn restart(id:u64,cx:&mut App) {
     };
     if ok { retry(id,cx); }else{toast(cx,"Could not persist clean retry");}
 }
+/// Remove only the native partial owned by a terminal job, with explicit consent.
+/// yt-dlp staging may contain merge outputs; never recursively delete them.
+pub fn discard_partial(id:u64,cx:&mut App) {
+    if history_blocked(cx){toast(cx,"Download journal is unreadable");return;}
+    let job=cx.default_global::<Downloads>().jobs.lock().iter()
+        .find(|j|j.id==id&&matches!(j.status,JobStatus::Failed(_)|JobStatus::Cancelled)).cloned();
+    let Some(job)=job else{toast(cx,"Job is not eligible for cleanup");return;};
+    let result=(||->anyhow::Result<()> {
+        anyhow::ensure!(!job.directory.is_empty()&&valid_durable_id(&job.durable_id),"Missing job identity or original folder");
+        let root=std::fs::canonicalize(&job.directory)?;
+        let p=root.join(format!(".wetube-{}.part",job.durable_id));
+        match std::fs::symlink_metadata(&p) {
+            Ok(meta)=>{
+                anyhow::ensure!(meta.is_file()&&!meta.file_type().is_symlink(),"Unsafe partial file");
+                anyhow::ensure!(std::fs::canonicalize(&p)?.parent()==Some(root.as_path()),"Partial outside original folder");
+                anyhow::ensure!(store::wetube_kv_set(&format!("wetube_resume_{}",job.durable_id),""),"Could not clear resume checkpoint");
+                std::fs::remove_file(&p)?;
+            }
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(e)=>return Err(e.into()),
+        }
+        Ok(())
+    })();
+    match result {Ok(())=>toast(cx,"Native partial cleared. yt-dlp staging files are retained."),Err(e)=>toast(cx,e.to_string())}
+}
 fn new_durable_id() -> String { format!("{:032x}",rand::random::<u128>()) }
 fn valid_durable_id(id:&str)->bool { id.len()==32 && id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) }
 

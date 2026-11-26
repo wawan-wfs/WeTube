@@ -2,7 +2,21 @@
 use serde::{Deserialize,Serialize};
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct Validator { pub version:u8,pub itag:u32,pub total:u64,pub etag:String }
+pub struct Validator {
+    pub version:u8,pub itag:u32,pub total:u64,pub etag:String,
+    #[serde(default)] pub committed:u64,
+    #[serde(default)] pub prefix_sha256:String,
+}
+pub const CHECKPOINT_BYTES:u64=8*1024*1024;
+pub fn hex_digest(bytes:impl AsRef<[u8]>)->String {
+    bytes.as_ref().iter().map(|b|format!("{b:02x}")).collect()
+}
+impl Validator {
+    pub fn checkpoint_valid(&self)->bool {
+        self.version==2 && self.committed<=self.total && self.prefix_sha256.len()==64
+            && self.prefix_sha256.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))
+    }
+}
 pub const MAX_BYTES:u64=32*1024*1024*1024;
 pub fn strong_etag(s:&str)->bool {
     s.len()>=2 && s.len()<=512 && s.starts_with('"') && s.ends_with('"')
@@ -10,7 +24,7 @@ pub fn strong_etag(s:&str)->bool {
 }
 impl Validator {
     pub fn valid(&self,itag:u32)->bool {
-        self.version==1 && self.itag==itag && self.total>0 && self.total<=MAX_BYTES && strong_etag(&self.etag)
+        matches!(self.version,1|2) && self.itag==itag && self.total>0 && self.total<=MAX_BYTES && strong_etag(&self.etag)
     }
 }
 pub fn range_matches(value:&str,offset:u64,total:u64)->bool {
@@ -25,12 +39,18 @@ pub fn validate_append(v:&Validator,offset:u64,status:u16,range:&str,etag:&str,l
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn v()->Validator{Validator{version:1,itag:18,total:1000,etag:"\"abc\"".into()}}
+    fn v()->Validator{Validator{version:1,itag:18,total:1000,etag:"\"abc\"".into(),committed:0,prefix_sha256:String::new()}}
     #[test] fn exact_range(){assert!(validate_append(&v(),100,206,"bytes 100-999/1000","\"abc\"",Some(900)));}
     #[test] fn changed_or_wrong_range(){
         for (status,range,tag,len) in [(200,"bytes 100-999/1000","\"abc\"",Some(900)),(206,"bytes 99-999/1000","\"abc\"",Some(901)),(206,"bytes 100-998/1000","\"abc\"",Some(899)),(206,"bytes 100-999/1001","\"abc\"",Some(900)),(206,"bytes 100-999/1000","\"changed\"",Some(900)),(206,"bytes 100-999/1000","\"abc\"",Some(901))] {
             assert!(!validate_append(&v(),100,status,range,tag,len));
         }
+    }
+    #[test] fn checkpoint_bounds(){
+        let mut x=v();x.version=2;x.committed=200;x.prefix_sha256="a".repeat(64);
+        assert!(x.checkpoint_valid());x.committed=1001;assert!(!x.checkpoint_valid());
+        x.committed=200;x.prefix_sha256="z".repeat(64);assert!(!x.checkpoint_valid());
+        x.version=1;assert!(!x.checkpoint_valid());
     }
     #[test] fn invalid_validator(){
         for t in ["W/\"abc\"","abc","\"a\nb\"","\"a\"b\""]{assert!(!strong_etag(t));}

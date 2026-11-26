@@ -9,9 +9,15 @@ impl ScopedChild {
     pub fn spawn(cmd:&mut Command)->std::io::Result<Self> {
         #[cfg(windows)]
         let job=win::Job::new()?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_SUSPENDED | CREATE_NO_WINDOW: no application code before assignment.
+            cmd.creation_flags(0x00000004 | 0x08000000);
+        }
         let mut child=cmd.spawn()?;
         #[cfg(windows)]
-        if let Err(e)=job.assign(&child) {
+        if let Err(e)=job.assign(&child).and_then(|_| win::resume_primary(child.id())) {
             let _=child.kill(); let _=child.wait(); return Err(e);
         }
         Ok(Self{child,#[cfg(windows)] job})
@@ -45,6 +51,46 @@ mod win {
         fn AssignProcessToJobObject(job:Handle,process:Handle)->i32;
         fn TerminateJobObject(job:Handle,code:u32)->i32;
         fn CloseHandle(handle:Handle)->i32;
+        fn CreateToolhelp32Snapshot(flags:u32,pid:u32)->Handle;
+        fn Thread32First(snapshot:Handle,entry:*mut ThreadEntry)->i32;
+        fn Thread32Next(snapshot:Handle,entry:*mut ThreadEntry)->i32;
+        fn OpenThread(access:u32,inherit:i32,id:u32)->Handle;
+        fn ResumeThread(thread:Handle)->u32;
+        fn GetProcessIdOfThread(thread:Handle)->u32;
+    }
+    #[repr(C)]
+    struct ThreadEntry { size:u32, usage:u32, thread:u32, owner:u32, base:i32, delta:i32, flags:u32 }
+    struct OwnedHandle(Handle);
+    impl Drop for OwnedHandle {fn drop(&mut self){unsafe{CloseHandle(self.0);}}}
+    /// Rust Child retains the process handle but not the primary thread handle.
+    /// Enumerate the suspended process's single thread; fail closed if ambiguous.
+    pub fn resume_primary(pid:u32)->io::Result<()> {
+        let raw=unsafe{CreateToolhelp32Snapshot(0x4,0)};
+        if raw as isize == -1 {return Err(io::Error::last_os_error());}
+        let snapshot=OwnedHandle(raw);
+        let mut entry:ThreadEntry=unsafe{std::mem::zeroed()};
+        entry.size=std::mem::size_of::<ThreadEntry>() as u32;
+        let mut found=None;
+        let mut ok=unsafe{Thread32First(snapshot.0,&mut entry)};
+        if ok==0 {return Err(io::Error::last_os_error());}
+        while ok!=0 {
+            if entry.owner==pid {
+                if found.replace(entry.thread).is_some(){return Err(io::Error::other("Suspended child has multiple threads"));}
+            }
+            entry.size=std::mem::size_of::<ThreadEntry>() as u32;
+            ok=unsafe{Thread32Next(snapshot.0,&mut entry)};
+        }
+        let last=io::Error::last_os_error();
+        if last.raw_os_error()!=Some(18){return Err(last);}
+        let id=found.ok_or_else(||io::Error::other("Primary thread not found"))?;
+        // THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION
+        let raw=unsafe{OpenThread(0x0002|0x0800,0,id)};
+        if raw.is_null(){return Err(io::Error::last_os_error());}
+        let thread=OwnedHandle(raw);
+        if unsafe{GetProcessIdOfThread(thread.0)}!=pid {return Err(io::Error::other("Primary thread owner changed"));}
+        let previous=unsafe{ResumeThread(thread.0)};
+        if previous!=1 {return Err(io::Error::other("Unexpected primary thread suspend count"));}
+        Ok(())
     }
     pub struct Job(Handle);
     impl Job {
@@ -60,7 +106,7 @@ mod win {
             Ok(job)
         }
         pub fn assign(&self,child:&std::process::Child)->io::Result<()> {
-            // Immediate assignment after spawn; a descendant created before assignment is not guaranteed.
+            // The primary thread is still suspended here.
             if unsafe{AssignProcessToJobObject(self.0,child.as_raw_handle().cast())}==0 {Err(io::Error::last_os_error())}else{Ok(())}
         }
         pub fn terminate(&self){unsafe{TerminateJobObject(self.0,1);}}
@@ -77,5 +123,16 @@ mod tests {
         let mut child=ScopedChild::spawn(&mut cmd).unwrap();
         child.terminate();
         assert!(child.try_wait().unwrap().is_some());
+    }
+    #[test]
+    fn assigned_before_child_runs() {
+        let mut cmd=Command::new("cmd.exe");
+        cmd.args(["/d","/c","echo wetube-job-ready"]).stdout(std::process::Stdio::piped());
+        let mut child=ScopedChild::spawn(&mut cmd).unwrap();
+        let mut out=String::new();
+        use std::io::Read;
+        child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(out.contains("wetube-job-ready"));
     }
 }

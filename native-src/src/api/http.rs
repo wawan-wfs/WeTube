@@ -127,11 +127,26 @@ pub fn download_to(
 /// Use a fresh authorized media URL. Persist only the strong HTTP validator,
 /// representation ID and size, never the URL. Exact 206 required to append.
 pub fn download_resumable(url:&str,partial:&std::path::Path,key:&str,itag:u32,
-    mut progress:impl FnMut(u64,Option<u64>)->bool)->Result<()> {
-    use crate::wetube_resume::{Validator,MAX_BYTES,strong_etag,validate_append};
-    use std::io::{Seek,SeekFrom,Write};
+    progress:impl FnMut(u64,Option<u64>)->bool)->Result<()> {
     let prior=crate::store::wetube_kv_read(key)?.filter(|s|!s.is_empty())
-        .map(|s|serde_json::from_str::<Validator>(&s)).transpose()?;
+        .map(|s|serde_json::from_str::<crate::wetube_resume::Validator>(&s)).transpose()?;
+    transfer_resumable(agent(),url,partial,itag,prior,|v| {
+        let data=match v {Some(v)=>serde_json::to_string(v)?,None=>String::new()};
+        anyhow::ensure!(crate::store::wetube_kv_set(key,&data),"Could not persist media checkpoint");
+        Ok(())
+    },progress)
+}
+
+/// Dependency-injected checkpoint store and HTTP agent allow true local HTTP tests.
+fn transfer_resumable(
+    agent:&ureq::Agent,url:&str,partial:&std::path::Path,itag:u32,
+    prior:Option<crate::wetube_resume::Validator>,
+    mut save:impl FnMut(Option<&crate::wetube_resume::Validator>)->Result<()>,
+    mut progress:impl FnMut(u64,Option<u64>)->bool,
+)->Result<()> {
+    use crate::wetube_resume::{Validator,MAX_BYTES,CHECKPOINT_BYTES,strong_etag,validate_append,hex_digest};
+    use sha2::{Digest,Sha256};
+    use std::io::{Seek,SeekFrom,Write};
     let mut file=match std::fs::symlink_metadata(partial) {
         Ok(meta)=>{
             anyhow::ensure!(meta.is_file() && !meta.file_type().is_symlink(),"Unsafe partial file");
@@ -142,10 +157,31 @@ pub fn download_resumable(url:&str,partial:&std::path::Path,key:&str,itag:u32,
     };
     let existing=file.metadata()?.len();
     anyhow::ensure!(existing<=MAX_BYTES,"Partial download exceeds size limit");
-    let resume=prior.as_ref().filter(|v|v.valid(itag) && existing>0 && existing<v.total);
-    let mut req=agent().get(url).header("Accept-Encoding","identity");
-    if let Some(v)=resume {
-        req=req.header("Range",format!("bytes={existing}-")).header("If-Range",v.etag.as_str());
+    let mut hash=Sha256::new();
+    let mut resume=prior.filter(|v|v.valid(itag)&&v.checkpoint_valid()&&v.committed>0&&v.committed<=existing);
+    let mut offset=0;
+    if let Some(v)=&resume {
+        let mut left=v.committed;
+        let mut buf=vec![0u8;256*1024];
+        while left>0 {
+            let n=left.min(buf.len() as u64) as usize;
+            file.read_exact(&mut buf[..n])?;
+            hash.update(&buf[..n]);left-=n as u64;
+            anyhow::ensure!(progress(v.committed-left,Some(v.total)),"cancelled");
+        }
+        if hex_digest(hash.clone().finalize())==v.prefix_sha256 {
+            offset=v.committed;
+            // Only the fsync'd, hashed prefix is trusted. Ignore crash-tail bytes.
+            file.set_len(offset)?;
+            file.sync_all()?;
+        } else {resume=None;hash=Sha256::new();}
+    }
+    // A completed checkpoint can only be reused after an independent server
+    // validation; a full GET is used for that case rather than accepting 416.
+    if resume.as_ref().is_some_and(|v|offset==v.total) {resume=None;offset=0;hash=Sha256::new();}
+    let mut req=agent.get(url).header("Accept-Encoding","identity");
+    if let Some(v)=&resume {
+        req=req.header("Range",format!("bytes={offset}-")).header("If-Range",v.etag.as_str());
     }
     let mut resp=req.call().map_err(|_|anyhow!("Media download request failed"))?;
     let status=resp.status().as_u16();
@@ -154,23 +190,28 @@ pub fn download_resumable(url:&str,partial:&std::path::Path,key:&str,itag:u32,
     let content_range=header("content-range");
     let encoding=header("content-encoding");
     let length=header("content-length").parse::<u64>().ok();
-    anyhow::ensure!(encoding.is_empty() || encoding.eq_ignore_ascii_case("identity"),"Encoded representation cannot be resumed");
-    let (offset,total)=if status==206 {
+    anyhow::ensure!(encoding.is_empty()||encoding.eq_ignore_ascii_case("identity"),"Encoded representation cannot be resumed");
+    let (total,mut validator)=if status==206 {
         let v=resume.ok_or_else(||anyhow!("Unexpected partial HTTP response"))?;
-        anyhow::ensure!(validate_append(v,existing,status,&content_range,&etag,length),"Resume validator or byte range changed");
-        (existing,Some(v.total))
+        anyhow::ensure!(validate_append(&v,offset,status,&content_range,&etag,length),"Resume validator or byte range changed");
+        (Some(v.total),Some(v))
     } else if status==200 {
-        anyhow::ensure!(length.is_none_or(|n|n>0 && n<=MAX_BYTES),"Invalid media size");
-        anyhow::ensure!(crate::store::wetube_kv_set(key,""),"Could not clear previous resume validator");
-        file.set_len(0)?;file.sync_all()?;
-        if let Some(n)=length.filter(|_|strong_etag(&etag)) {
-            let data=serde_json::to_string(&Validator{version:1,itag,total:n,etag})?;
-            anyhow::ensure!(crate::store::wetube_kv_set(key,&data),"Could not persist resume validator");
-        }
-        (0,length)
+        anyhow::ensure!(length.is_none_or(|n|n>0&&n<=MAX_BYTES),"Invalid media size");
+        save(None)?;file.set_len(0)?;file.sync_all()?;offset=0;hash=Sha256::new();
+        let v=length.filter(|_|strong_etag(&etag)).map(|n|Validator{version:2,itag,total:n,etag,committed:0,prefix_sha256:hex_digest(hash.clone().finalize())});
+        (length,v)
     } else {return Err(anyhow!("HTTP {status}"));};
     file.seek(SeekFrom::Start(offset))?;
     let mut done=offset;
+    let mut durable=offset;
+    let mut checkpoint=|file:&std::fs::File,hash:&Sha256,done:u64,v:&mut Option<Validator>|->Result<()> {
+        file.sync_all()?;
+        if let Some(v)=v {
+            v.committed=done;v.prefix_sha256=hex_digest(hash.clone().finalize());
+            save(Some(v))?;
+        }
+        Ok(())
+    };
     let result=(||->Result<()> {
         anyhow::ensure!(progress(done,total),"cancelled");
         let mut reader=resp.body_mut().with_config().limit(MAX_BYTES).reader();
@@ -178,14 +219,18 @@ pub fn download_resumable(url:&str,partial:&std::path::Path,key:&str,itag:u32,
         loop {
             let n=reader.read(&mut buf)?;if n==0{break;}
             let next=done.checked_add(n as u64).ok_or_else(||anyhow!("Media size overflow"))?;
-            anyhow::ensure!(next<=MAX_BYTES && total.is_none_or(|t|next<=t),"Media response exceeds expected size");
-            file.write_all(&buf[..n])?;done=next;
+            anyhow::ensure!(next<=MAX_BYTES&&total.is_none_or(|t|next<=t),"Media response exceeds expected size");
+            file.write_all(&buf[..n])?;hash.update(&buf[..n]);done=next;
+            if done-durable>=CHECKPOINT_BYTES {checkpoint(&file,&hash,done,&mut validator)?;durable=done;}
             anyhow::ensure!(progress(done,total),"cancelled");
         }
-        anyhow::ensure!(done>0 && total.is_none_or(|n|done==n),"Incomplete media body");
+        anyhow::ensure!(done>0&&total.is_none_or(|n|done==n),"Incomplete media body");
         Ok(())
     })();
-    file.sync_all()?;
+    // On cancellation or network failure, retain only complete written bytes.
+    // write_all may fail mid-buffer; do not include that incomplete buffer.
+    file.set_len(done)?;
+    checkpoint(&file,&hash,done,&mut validator)?;
     result
 }
 

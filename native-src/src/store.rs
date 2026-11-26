@@ -556,12 +556,41 @@ pub fn wetube_kv_set(key: &str, v: &str) -> bool { save_setting_json(key, &v).is
 
 /// Checked local state read. Existing legacy KV format remains unchanged.
 pub fn wetube_kv_read(key: &str) -> Result<Option<String>> {
+    wetube_kv_read_bounded(key, 1024 * 1024)
+}
+/// Read and decode the legacy JSON-string envelope with a SQL-side size check.
+/// Corrupt or oversized state is an error, not an empty journal.
+pub fn wetube_kv_read_bounded(key: &str, limit: usize) -> Result<Option<String>> {
     let conn = db().lock();
-    let raw: Option<String> = conn.query_row("SELECT value FROM kv WHERE key=?1", [key], |row| row.get(0)).optional()?;
-    raw.map(|value| {
-        anyhow::ensure!(value.len() <= 2 * 1024 * 1024, "Saved local state exceeds size limit");
-        Ok(serde_json::from_str::<String>(&value)?)
-    }).transpose()
+    read_bounded_kv(&conn, key, limit)
+}
+fn read_bounded_kv(conn: &Connection, key: &str, limit: usize) -> Result<Option<String>> {
+    anyhow::ensure!((1..=16 * 1024 * 1024).contains(&limit), "Invalid local state size limit");
+    let outer_limit = (limit * 2 + 2) as i64;
+    let row: Option<(i64, Option<String>)> = conn.query_row(
+        "SELECT length(CAST(value AS BLOB)), CASE WHEN length(CAST(value AS BLOB))<=?2 THEN value ELSE NULL END FROM kv WHERE key=?1",
+        params![key,outer_limit], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let Some((size,raw))=row else { return Ok(None) };
+    anyhow::ensure!(size<=outer_limit,"Saved local state exceeds size limit");
+    let value:String=serde_json::from_str(&raw.ok_or_else(|| anyhow::anyhow!("Missing saved state envelope"))?)?;
+    anyhow::ensure!(value.len()<=limit,"Saved local state exceeds size limit");
+    Ok(Some(value))
+}
+
+#[cfg(test)]
+mod bounded_kv_tests {
+    use super::*;
+    #[test] fn missing_corrupt_and_oversized_are_distinct() {
+        let c=Connection::open_in_memory().unwrap();
+        c.execute_batch(TABLES).unwrap();
+        assert_eq!(read_bounded_kv(&c,"missing",16).unwrap(),None);
+        for (key,raw) in [("valid",serde_json::to_string("a\"b").unwrap()),("broken","not json".into()),("large",serde_json::to_string(&"x".repeat(17)).unwrap())] {
+            c.execute("INSERT INTO kv VALUES(?1,?2)",params![key,raw]).unwrap();
+        }
+        assert_eq!(read_bounded_kv(&c,"valid",16).unwrap(),Some("a\"b".into()));
+        assert!(read_bounded_kv(&c,"broken",16).is_err());
+        assert!(read_bounded_kv(&c,"large",16).is_err());
+    }
 }
 
 pub fn kv_set(key: &str, v: &str) {
@@ -760,9 +789,9 @@ pub fn progress_map() -> HashMap<String, (f64, f64)> {
 /// the furthest resume position. Local entries keep their own date and order.
 /// Returns true when the entry was new.
 pub fn history_merge_remote(v: &VideoItem, progress: f64, duration: f64, watched_at: i64) -> bool {
-    if !settings_snapshot().history_enabled {
-        return false;
-    }
+    if !settings_snapshot().history_enabled || !crate::wetube_session::valid_id(&v.id)
+        || !progress.is_finite() || !duration.is_finite() || progress<0.0 || duration<0.0 { return false; }
+    let progress = if duration>0.0 { progress.min(duration) } else { progress.min(604800.0) };
     let Ok(j) = serde_json::to_string(v) else { return false };
     let conn = db().lock();
     let existed = conn
@@ -771,14 +800,14 @@ pub fn history_merge_remote(v: &VideoItem, progress: f64, duration: f64, watched
         .ok()
         .flatten()
         .is_some();
-    let _ = conn.execute(
+    let written = conn.execute(
         "INSERT INTO history(video_id, json, watched_at, progress, duration) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(video_id) DO UPDATE SET
            progress = CASE WHEN excluded.progress > history.progress THEN excluded.progress ELSE history.progress END,
            duration = CASE WHEN history.duration > 0 THEN history.duration ELSE excluded.duration END",
         params![v.id, j, watched_at, progress, duration],
     );
-    !existed
+    written.is_ok() && !existed
 }
 
 pub fn history_remove(video_id: &str) {
@@ -904,13 +933,14 @@ pub fn playlist_items(id: i64) -> Vec<VideoItem> {
 
 pub fn playlist_add(id: i64, v: &VideoItem) {
     let conn = db().lock();
-    let pos: i64 = conn
-        .query_row("SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_items WHERE playlist_id=?1", [id], |r| r.get(0))
-        .unwrap_or(0);
+    if !crate::wetube_session::valid_id(&v.id) { return; }
     if let Ok(j) = serde_json::to_string(v) {
+        // One statement: validate parent and append in the same SQLite write.
         let _ = conn.execute(
-            "INSERT OR IGNORE INTO playlist_items VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, v.id, j, crate::api::json::now(), pos],
+            "INSERT OR IGNORE INTO playlist_items(playlist_id,video_id,json,added_at,position)
+             SELECT ?1,?2,?3,?4,(SELECT COALESCE(MAX(position),-1)+1 FROM playlist_items WHERE playlist_id=?1)
+             WHERE EXISTS(SELECT 1 FROM playlists WHERE id=?1)",
+            params![id,v.id,j,crate::api::json::now()],
         );
     }
 }

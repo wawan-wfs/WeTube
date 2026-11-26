@@ -958,9 +958,12 @@ impl Player {
     pub fn seek_to(&mut self, t: f64) {
         if !t.is_finite() { return; }
         let t = if self.duration.is_finite() && self.duration > 0.0 { t.clamp(0.0, (self.duration - 0.1).max(0.0)) } else { t.clamp(0.0, 604800.0) };
-        self.time = t;
+        if self.loading || self.video.is_none() { return; }
         if let Some(m) = &self.mpv {
-            let _ = m.command(&["seek", &format!("{t}"), "absolute+exact"]);
+            if m.command(&["seek", &format!("{t}"), "absolute+exact"]).is_ok() {
+                self.time = t;
+                self.checkpoint_recovery();
+            }
         }
     }
 

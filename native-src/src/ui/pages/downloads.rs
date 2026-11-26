@@ -29,6 +29,7 @@ impl Render for DownloadsPage {
         let done = jobs.iter().filter(|j| matches!(j.status, JobStatus::Done(_))).count();
         let failed = jobs.iter().filter(|j| matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled)).count();
         let interrupted = crate::downloads::interrupted_count(cx);
+        let journal_blocked = crate::downloads::history_blocked(cx);
         let filter = self.filter;
         let visible = jobs.iter().rev().filter(|j| {
             let category = match &j.status { JobStatus::Queued | JobStatus::Running => 1, JobStatus::Done(_) => 2, _ => 3 };
@@ -83,7 +84,7 @@ impl Render for DownloadsPage {
                         let p2 = path.clone();
                         d.child(pill(SharedString::from(format!("dlo-{id}")), Some("play"), "Open", cx).on_click(move |_, _, cx| crate::downloads::open_file(&path, cx)))
                             .child(icon_button(SharedString::from(format!("dlf-{id}")), "folder-open", cx).on_click(move |_, _, cx| crate::ui::app::reveal_in_folder(&p2, cx)))
-                            .child(icon_button(SharedString::from(format!("dld-{id}")), "trash-2", cx).on_click(move |_, _, cx| crate::downloads::delete_file(id, cx)))
+                            .child(icon_button(SharedString::from(format!("dld-{id}")), "trash-2", cx).on_click(move |_, window, cx| crate::ui::app::confirm("Delete downloaded file?", "This permanently removes the selected file from disk.", "Delete file", window, cx, move |_, cx| crate::downloads::delete_file(id, cx))))
                     })
                     .when(matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled), |d| d.child(pill(SharedString::from(format!("retry-{id}")), Some("refresh-cw"), "Retry", cx).on_click(move |_, _, cx| crate::downloads::retry(id, cx))))
                     .when(!running, |d| d.child(icon_button(SharedString::from(format!("dlr-{id}")), "x", cx).on_click(move |_, _, cx| crate::downloads::remove(id, cx)))),
@@ -147,6 +148,8 @@ impl Render for DownloadsPage {
                         .child(div().text_sm().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(format!("{active} active · {done} completed · {failed} failed or cancelled")))
                         .child(gpui_kit::component::input::Input::new(&self.search).appearance(false).cleanable(true))
                         .child(filters)
+                        .when(journal_blocked, |d| d.child(div().p_3().rounded_lg().bg(p.surface2).border_1().border_color(p.border)
+                            .text_sm().text_color(p.text).child("Saved download history could not be read. New downloads are paused; existing history has not been overwritten.")))
                         .when(interrupted > 0, |d| d.child(div().p_3().rounded_lg().bg(p.surface2).border_1().border_color(p.border)
                             .text_sm().text_color(p.text).child(format!("{interrupted} interrupted downloads recovered. Use Retry to restart selected items; no automatic network activity.")))))
                     .child(list),

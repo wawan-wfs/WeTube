@@ -346,7 +346,8 @@ pub const YTDLP_IOS: &str = "youtube:player_client=ios;formats=missing_pot";
 /// Whether a failed yt-dlp run is worth retrying through the iOS client.
 pub fn retry_with_ios(err: &str) -> bool {
     let e = err.to_lowercase();
-    !e.contains("cancelled") && (e.contains("not available") || e.contains("unavailable") || e.contains("requested format") || e.contains("reloaded"))
+    if ["cancelled","verification","confirm you","bot","private","sign in","authorization","members-only","age-restricted","copyright","403","429","refused","rate-limit"].iter().any(|term| e.contains(term)) { return false; }
+    e.contains("requested format") || e.contains("no video formats")
 }
 
 /// `name`: the file name without extension, when the URL isn't a YouTube page
@@ -866,11 +867,13 @@ fn persist_history(jobs: &[Job]) -> bool {
         .is_some_and(|s| store::wetube_kv_set(HISTORY_KEY, &s))
 }
 fn save_history(cx: &mut App) {
-    let d = cx.default_global::<Downloads>();
-    if d.history_blocked { return; }
-    if !persist_history(&d.jobs.lock()) {
-        toast(cx, "Could not save download history");
-    }
+    let ok = {
+        let d = cx.default_global::<Downloads>();
+        if d.history_blocked { return; }
+        let result = persist_history(&d.jobs.lock());
+        result
+    };
+    if !ok { toast(cx, "Could not save download history"); }
 }
 
 /// Restore interrupted work as explicit retry candidates, never auto-start it.
@@ -878,17 +881,20 @@ pub fn load_history(cx: &mut App) {
     let d = cx.default_global::<Downloads>();
     if d.history_loaded { return; }
     d.history_loaded = true;
-    let Some(raw) = store::kv_get(HISTORY_KEY) else { return };
-    if raw.len() > HISTORY_LIMIT {
-        d.history_blocked = true; return;
-    }
+    let raw = match store::wetube_kv_read_bounded(HISTORY_KEY,HISTORY_LIMIT) {
+        Ok(Some(raw))=>raw,
+        Ok(None)=>return,
+        Err(_)=>{ d.history_blocked=true; return; }
+    };
     let Ok(saved) = serde_json::from_str::<Vec<Saved>>(&raw) else {
         d.history_blocked = true; return;
     };
+    if saved.iter().any(|s| !crate::wetube_session::valid_id(&s.video.id)) {
+        d.history_blocked=true; return;
+    }
     let mut jobs = d.jobs.lock();
     for s in saved {
         let status = restore_status(&s);
-        if !crate::wetube_session::valid_id(&s.video.id) { continue; }
         d.next += 1;
         let progress = if matches!(status, JobStatus::Done(_)) { 1.0 } else { 0.0 };
         jobs.push(Job { id: d.next, video: s.video, format: s.format, directory: s.directory,
@@ -896,6 +902,9 @@ pub fn load_history(cx: &mut App) {
     }
 }
 
+pub fn history_blocked(cx: &App) -> bool {
+    cx.try_global::<Downloads>().is_some_and(|d| d.history_blocked)
+}
 pub fn interrupted_count(cx: &App) -> usize {
     cx.try_global::<Downloads>().map(|d| d.jobs.lock().iter().filter(|j| matches!(&j.status, JobStatus::Failed(e) if e == INTERRUPTED)).count()).unwrap_or(0)
 }

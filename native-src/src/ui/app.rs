@@ -1776,7 +1776,7 @@ impl AppView {
         let k = ev.keystroke.key.as_str();
         let m = &ev.keystroke.modifiers;
         if k == "f6" && self.dialog.is_none() {
-            if search_focused { window.focus(&self.focus, cx); } else { window.focus(&self.search.read(cx).focus_handle(cx), cx); }
+            if search_focused { window.focus(&self.focus, cx); } else { let focus = self.search.read(cx).focus_handle(cx); window.focus(&focus, cx); }
             cx.notify(); return;
         }
         if k == "f11" && matches!(self.route, Route::Watch { .. }) && self.dialog.is_none() {

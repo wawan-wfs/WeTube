@@ -26,7 +26,9 @@ fn valid_id(id:&str)->bool {
     id.len()==32&&id.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))
 }
 fn marked(c:&Connection)->Result<bool>{
-    Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM kv WHERE key=?1)",[MARKER],|r|r.get(0))?)
+    use rusqlite::OptionalExtension;
+    let version:Option<String>=c.query_row("SELECT value FROM kv WHERE key=?1",[MARKER],|r|r.get(0)).optional()?;
+    match version.as_deref(){None=>Ok(false),Some("2")=>Ok(true),_=>anyhow::bail!("Unsupported download journal version")}
 }
 fn bounded(count:i64,bytes:i64,max:i64)->Result<()>{
     ensure!((0..=COUNT_LIMIT as i64).contains(&count),"Download journal exceeds row limit");
@@ -43,6 +45,14 @@ fn validate(id:&str,payload:&str)->Result<()>{
     Ok(())
 }
 pub fn read_rows(c:&Connection)->Result<Option<Vec<(String,String)>>>{
+    // A stable read transaction prevents a concurrent writer changing size or
+    // identity between the budget check and materialization.
+    let tx=c.unchecked_transaction()?;
+    let rows=read_snapshot(&tx)?;
+    tx.commit()?;
+    Ok(rows)
+}
+fn read_snapshot(c:&Connection)->Result<Option<Vec<(String,String)>>>{
     // Check aggregate size before allocating or loading any JSON.
     let (n,_,_)=stats(c)?;
     if !marked(c)?{
@@ -81,6 +91,33 @@ pub fn update_row(c:&mut Connection,id:&str,payload:&str,done:bool)->Result<()>{
     if done{tx.execute(SQL_CLEAR_TERMINAL,params![format!("wetube_publish_{id}"),format!("wetube_resume_{id}")])?;}
     tx.commit()?;Ok(())
 }
+/// Remove selected identities and their recovery metadata atomically. Missing
+/// rows reject the entire operation; other workers' rows are never rewritten.
+pub fn remove_rows(c:&mut Connection,ids:&[String])->Result<()> {
+    ensure!(ids.len()<=COUNT_LIMIT,"Too many removal identities");
+    let tx=c.transaction()?;
+    ensure!(marked(&tx)?,"Download journal migration not committed");
+    for id in ids {
+        ensure!(valid_id(id),"Invalid download identity");
+        ensure!(tx.execute("DELETE FROM wetube_download_jobs WHERE job_id=?1",[id])?==1,"Download job not found in journal");
+        tx.execute(SQL_CLEAR_TERMINAL,params![format!("wetube_publish_{id}"),format!("wetube_resume_{id}")])?;
+    }
+    tx.commit()?;Ok(())
+}
+/// Replace the identity for an explicit clean retry, preserving display order
+/// and atomically clearing only the old job's recovery metadata.
+pub fn replace_identity(c:&mut Connection,old:&str,new:&str,payload:&str)->Result<()> {
+    validate(new,payload)?;
+    ensure!(valid_id(old)&&old!=new,"Invalid replacement identity");
+    let tx=c.transaction()?;
+    ensure!(marked(&tx)?,"Download journal migration not committed");
+    let old_len:i64=tx.query_row("SELECT length(CAST(json AS BLOB)) FROM wetube_download_jobs WHERE job_id=?1",[old],|r|r.get(0))?;
+    let(n,b,m)=stats(&tx)?;
+    bounded(n,b-old_len+payload.len() as i64,m.max(payload.len() as i64))?;
+    ensure!(tx.execute("UPDATE wetube_download_jobs SET job_id=?2,json=?3 WHERE job_id=?1",params![old,new,payload])?==1,"Download job not found in journal");
+    tx.execute(SQL_CLEAR_TERMINAL,params![format!("wetube_publish_{old}"),format!("wetube_resume_{old}")])?;
+    tx.commit()?;Ok(())
+}
 pub fn write_rows(c:&mut Connection,rows:&[(String,String)])->Result<()>{
     // Validate proposed snapshot before starting a write transaction.
     let mut total=0usize;let mut max=0usize;
@@ -92,6 +129,8 @@ pub fn write_rows(c:&mut Connection,rows:&[(String,String)])->Result<()>{
     }
     bounded(rows.len() as i64,total as i64,max as i64)?;
     let tx=c.transaction()?;
+    // Do not silently downgrade or overwrite an unknown journal version.
+    marked(&tx)?;
     tx.execute_batch(SQL_TEMP)?;
     {
         let mut seen=tx.prepare_cached(SQL_SEEN)?;
@@ -135,6 +174,32 @@ mod download_row_tests{
         write_rows(&mut c,&[]).unwrap();
         assert_eq!(read_rows(&c).unwrap(),Some(vec![]));
         assert_eq!(c.query_row("SELECT COUNT(*) FROM kv WHERE key=?1",[format!("wetube_publish_{a}")],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+    #[test]
+    fn selected_removal_and_identity_replacement(){
+        let mut c=db();let a="a".repeat(32);let b="b".repeat(32);let d="d".repeat(32);
+        write_rows(&mut c,&[(a.clone(),"one".into()),(b.clone(),"two".into())]).unwrap();
+        for k in [format!("wetube_publish_{a}"),format!("wetube_resume_{b}")]{c.execute("INSERT INTO kv VALUES(?1,'intent')",[k]).unwrap();}
+        assert!(replace_identity(&mut c,&a,&b,"collision").is_err());
+        assert!(remove_rows(&mut c,&[a.clone(),d.clone()]).is_err());
+        assert_eq!(read_rows(&c).unwrap().unwrap().len(),2);
+        replace_identity(&mut c,&a,&d,"new").unwrap();
+        assert_eq!(read_rows(&c).unwrap().unwrap(),vec![(d.clone(),"new".into()),(b.clone(),"two".into())]);
+        assert!(update_row(&mut c,&a,"late",false).is_err());
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM kv WHERE key=?1",[format!("wetube_publish_{a}")],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM kv WHERE key=?1",[format!("wetube_resume_{b}")],|r|r.get::<_,i64>(0)).unwrap(),1);
+        remove_rows(&mut c,&[b]).unwrap();
+        assert_eq!(read_rows(&c).unwrap().unwrap(),vec![(d,"new".into())]);
+    }
+    #[test]
+    fn future_marker_is_fail_closed(){
+        let mut c=db();let id="a".repeat(32);
+        write_rows(&mut c,&[(id.clone(),"one".into())]).unwrap();
+        c.execute("UPDATE kv SET value='99' WHERE key=?1",[MARKER]).unwrap();
+        assert!(read_rows(&c).is_err());assert!(insert_row(&mut c,&"b".repeat(32),"new").is_err());
+        assert!(write_rows(&mut c,&[]).is_err());assert!(remove_rows(&mut c,&[id.clone()]).is_err());
+        assert!(update_row(&mut c,&id,"changed",true).is_err());
+        assert_eq!(c.query_row("SELECT json FROM wetube_download_jobs WHERE job_id=?1",[id],|r|r.get::<_,String>(0)).unwrap(),"one");
     }
     #[test]
     fn byte_budget_and_atomic_completion(){

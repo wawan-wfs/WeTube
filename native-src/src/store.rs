@@ -578,6 +578,12 @@ pub fn update_download_row(id:&str,payload:&str,done:bool)->Result<()> {
 pub fn insert_download_row(id:&str,payload:&str)->Result<()> {
     crate::wetube_journal::insert_row(&mut db().lock(),id,payload)
 }
+pub fn remove_download_rows(ids:&[String])->Result<()> {
+    crate::wetube_journal::remove_rows(&mut db().lock(),ids)
+}
+pub fn replace_download_identity(old:&str,new:&str,payload:&str)->Result<()> {
+    crate::wetube_journal::replace_identity(&mut db().lock(),old,new,payload)
+}
 
 pub fn wetube_kv_read(key: &str) -> Result<Option<String>> {
     wetube_kv_read_bounded(key, 1024 * 1024)

@@ -299,7 +299,8 @@ pub fn restart(id:u64,cx:&mut App) {
         if let Some(i)=list.iter().position(|j|j.id==id && matches!(j.status,JobStatus::Failed(_)|JobStatus::Cancelled)) {
             let old=list[i].durable_id.clone();
             list[i].durable_id=new_durable_id();
-            if persist_history(&list) {true} else {list[i].durable_id=old;false}
+            if serde_json::to_string(&saved_job(&list[i])).ok().is_some_and(|raw|store::replace_download_identity(&old,&list[i].durable_id,&raw).is_ok()) {true}
+            else {list[i].durable_id=old;false}
         }else{false}
     };
     if ok { retry(id,cx); }else{toast(cx,"Could not persist clean retry");}
@@ -763,8 +764,9 @@ fn remove_terminal(id:Option<u64>,cx:&mut App){
     let jobs=cx.default_global::<Downloads>().jobs.clone();
     let ok={
         let mut list=jobs.lock();
-        let next:Vec<_>=list.iter().filter(|j|matches!(j.status,JobStatus::Queued|JobStatus::Running)||id.is_some_and(|id|id!=j.id)).cloned().collect();
-        if persist_history(&next){*list=next;true}else{false}
+        let keep=|j:&Job|matches!(j.status,JobStatus::Queued|JobStatus::Running)||id.is_some_and(|id|id!=j.id);
+        let ids:Vec<String>=list.iter().filter(|j|!keep(j)).map(|j|j.durable_id.clone()).collect();
+        if store::remove_download_rows(&ids).is_ok(){list.retain(keep);true}else{false}
     };
     if !ok{toast(cx,"Could not save history change; original entries retained");}
     cx.refresh_windows();

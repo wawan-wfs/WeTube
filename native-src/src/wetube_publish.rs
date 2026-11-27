@@ -10,17 +10,23 @@ use std::{path::{Path,PathBuf,Component},io::Read,sync::atomic::{AtomicBool,Orde
 struct Intent { version:u8, job:String, target:String, source:String, staged:bool, size:u64, digest:String }
 fn key(id:&str)->String{format!("wetube_publish_{id}")}
 fn name(s:&str)->bool{
-    !s.is_empty()&&s.len()<=1024&&!s.contains(['\\','/',':','\0'])&&
+    // Apply Windows filename rules even when tested on Linux. Device names,
+    // trailing aliases and alternate data streams are not ordinary media files.
+    if s.is_empty()||s.encode_utf16().count()>255||s.ends_with(['.',' '])
+        ||s.chars().any(|c|c.is_control()||matches!(c,'\\'|'/'|':'|'<'|'>'|'"'|'|'|'?'|'*')) {return false;}
+    let stem=s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    if matches!(stem.as_str(),"CON"|"PRN"|"AUX"|"NUL"|"CONIN$"|"CONOUT$")
+        ||["COM","LPT"].iter().any(|p|stem.strip_prefix(p).is_some_and(|n|matches!(n,"1"|"2"|"3"|"4"|"5"|"6"|"7"|"8"|"9"|"¹"|"²"|"³"))) {return false;}
     matches!((Path::new(s).components().next(),Path::new(s).components().nth(1)),(Some(Component::Normal(_)),None))
 }
 fn paths(root:&Path,i:&Intent,id:&str)->Result<(PathBuf,PathBuf)>{
     ensure!(i.version==1&&i.job==id&&valid_durable_id(id)&&name(&i.target)&&name(&i.source)&&i.size>0&&i.size<=crate::wetube_resume::MAX_BYTES&&i.digest.len()==64&&i.digest.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)),"Invalid publication intent");
-    ensure!(!i.target.starts_with(".wetube-"),"Reserved output filename");
+    ensure!(!i.target.to_ascii_lowercase().starts_with(".wetube-"),"Reserved output filename");
     let src=if i.staged{
         let stage=root.join(format!(".wetube-job-{id}"));
         if stage.exists(){
             let meta=std::fs::symlink_metadata(&stage)?;
-            ensure!(meta.is_dir()&&!meta.file_type().is_symlink()&&std::fs::canonicalize(&stage)?.parent()==Some(root),"Unsafe publication stage");
+            ensure!(meta.is_dir()&&!meta.file_type().is_symlink()&&std::fs::canonicalize(&stage)?==stage,"Unsafe publication stage");
         }
         stage.join(&i.source)
     }else{
@@ -34,8 +40,10 @@ fn paths(root:&Path,i:&Intent,id:&str)->Result<(PathBuf,PathBuf)>{
 fn fingerprint(root:&Path,path:&Path,cancel:&AtomicBool)->Result<(u64,String)>{
     let meta=std::fs::symlink_metadata(path)?;
     ensure!(meta.is_file()&&!meta.file_type().is_symlink()&&std::fs::canonicalize(path)?.starts_with(root),"Unsafe output file");
-    let mut file=std::fs::File::open(path)?;
-    let size=file.metadata()?.len();
+    let mut options=std::fs::OpenOptions::new();options.read(true);
+    #[cfg(windows)] {use std::os::windows::fs::OpenOptionsExt;options.share_mode(1);}
+    let mut file=options.open(path)?;
+    let before=file.metadata()?;let size=before.len();
     ensure!(size>0&&size<=crate::wetube_resume::MAX_BYTES,"Invalid output size");
     let mut hash=Sha256::new();let mut buf=vec![0u8;256*1024];let mut done=0u64;
     loop {
@@ -44,7 +52,8 @@ fn fingerprint(root:&Path,path:&Path,cancel:&AtomicBool)->Result<(u64,String)>{
         done=done.checked_add(n as u64).ok_or_else(||anyhow!("Output size overflow"))?;
         ensure!(done<=size,"Output changed during verification");hash.update(&buf[..n]);
     }
-    ensure!(done==size,"Output changed during verification");
+    let after=file.metadata()?;
+    ensure!(done==size&&after.len()==size&&before.modified()?==after.modified()?,"Output changed during verification");
     Ok((size,crate::wetube_resume::hex_digest(hash.finalize())))
 }
 fn matches(root:&Path,path:&Path,i:&Intent,cancel:&AtomicBool)->Result<bool>{
@@ -152,5 +161,8 @@ mod tests {
         assert_eq!(std::fs::read(root.join("video.mp4")).unwrap(),b"durable media fixture");
         drop(db);std::fs::remove_dir_all(root).unwrap();
     }
-    #[test]fn rejects_paths(){for s in ["","..","a/b","a\\b","C:video"]{assert!(!name(s));}}
+    #[test]fn rejects_paths(){
+        for s in ["","..","a/b","a\\b","C:video","con.mp4","NUL","COM1.txt","LPT².mp4","a.","a ","a?b","a\n.mp4","CONIN$.txt"]{assert!(!name(s),"accepted {s:?}");}
+        assert!(!name(&"a".repeat(256)));assert!(name("Video — 日本語.mp4"));
+    }
 }

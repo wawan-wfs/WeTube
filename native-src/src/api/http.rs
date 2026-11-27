@@ -412,6 +412,31 @@ mod resume_http_tests {
         assert_eq!(std::fs::read(&p).unwrap(),before);
     }
     #[test]
+    fn real_http_stalled_body_can_cancel() {
+        let dir=FixtureDir::new();let p=dir.0.join("partial");
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let url=format!("http://{}/stall",listener.local_addr().unwrap());
+        let (release,hold)=std::sync::mpsc::channel::<()>();
+        let server=std::thread::spawn(move||{
+            let(mut sock,_)=listener.accept().unwrap();
+            sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            {let mut r=BufReader::new(&mut sock);loop{let mut line=String::new();if r.read_line(&mut line).unwrap()==0||line=="\r\n"{break;}}}
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nETag: \"fixture-v1\"\r\nConnection: close\r\n\r\n").unwrap();
+            sock.write_all(&vec![7u8;256*1024]).unwrap();sock.flush().unwrap();
+            let _=hold.recv_timeout(Duration::from_secs(5));
+        });
+        let saved=RefCell::new(None);let mut received=None;
+        let started=std::time::Instant::now();
+        let result=transfer_resumable(&local_agent(),&url,&p,18,None,|v|{*saved.borrow_mut()=v.cloned();Ok(())},|n,_|{
+            if n>0&&received.is_none(){received=Some(std::time::Instant::now());}
+            received.is_none_or(|t|t.elapsed()<Duration::from_millis(250))&&started.elapsed()<Duration::from_secs(2)
+        });
+        let elapsed=started.elapsed();let _=release.send(());server.join().unwrap();
+        assert!(result.is_err());assert!(received.is_some());assert!(elapsed<Duration::from_secs(2));
+        let v=saved.into_inner().unwrap();assert!(v.committed>0&&v.committed<v.total);
+        assert_eq!(std::fs::metadata(&p).unwrap().len(),v.committed);
+    }
+    #[test]
     fn real_http_corrupt_prefix_restarts() {
         let dir=FixtureDir::new();let p=dir.0.join("partial");let data=payload();
         let v=interrupted(&p,&data);

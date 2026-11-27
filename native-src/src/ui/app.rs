@@ -1775,7 +1775,9 @@ impl AppView {
         let dialog_focused = self.dialog_input.read(cx).focus_handle(cx).is_focused(window);
         let k = ev.keystroke.key.as_str();
         let m = &ev.keystroke.modifiers;
-        if k == "f6" && self.dialog.is_none() {
+        // Escape must dismiss the modal before any global navigation shortcut.
+        if self.dialog.is_some() && k != "escape" { return; }
+        if k == "f6" && self.dialog.is_none() && !cx.global::<UiState>().fullscreen {
             if search_focused { window.focus(&self.focus, cx); } else { let focus = self.search.read(cx).focus_handle(cx); window.focus(&focus, cx); }
             cx.notify(); return;
         }
@@ -1816,7 +1818,7 @@ impl AppView {
                 _ => {}
             }
         }
-        if k == "escape" && self.dl_panel {
+        if k == "escape" && self.dialog.is_none() && self.dl_panel {
             self.dl_panel = false;
             cx.notify();
             return;
@@ -2064,7 +2066,7 @@ impl AppView {
         let hist: std::collections::HashSet<String> = self.history_suggestions.iter().cloned().collect();
         let sel = self.sel_suggestion;
         let maximized = window.is_maximized();
-        let compact=window.viewport_size().width<px(1050.);
+        let compact=crate::wetube_workspace::compact(window.viewport_size().width.into(),1050.0,store::settings_snapshot().ui_scale);
         div()
             .id("topbar")
             .flex()
@@ -2232,7 +2234,7 @@ impl AppView {
         let route = self.route.clone();
         let is_watch = matches!(route, Route::Watch { .. });
         let s = store::settings_snapshot();
-        if (!ui.sidebar_open || ui.viewport.width<px(1000.)) && !is_watch {
+        if crate::wetube_workspace::sidebar_width(ui.viewport.width.into(),ui.sidebar_open,is_watch,s.ui_scale)==72.0 {
             // compact rail
             let rail = |id: &'static str, ic: &'static str, label: &'static str, r: Route, active: bool, cx: &mut Context<Self>| {
                 div()
@@ -3052,24 +3054,18 @@ impl Render for AppView {
             if self.wetube_tabs_dirty { self.wetube_session_retry = std::time::Instant::now() + std::time::Duration::from_secs(2); }
         }
         let p = pal(cx);
-        let scale = store::settings_snapshot().ui_scale.clamp(0.75, 1.5);
+        let scale = crate::wetube_workspace::scale(store::settings_snapshot().ui_scale);
         if (f32::from(window.rem_size()) - 16.0 * scale).abs() > 0.01 {
             window.set_rem_size(px(16.0 * scale));
         }
         let vp = window.viewport_size();
         let ui = *cx.global::<UiState>();
         let is_watch = matches!(self.route, Route::Watch { .. });
-        let sidebar_w = if is_watch {
-            0.0
-        } else if ui.sidebar_open && vp.width>=px(1000.) {
-            232.0
-        } else {
-            72.0
-        };
+        let sidebar_w=crate::wetube_workspace::sidebar_width(vp.width.into(),ui.sidebar_open,is_watch,scale);
         {
             let u = cx.global_mut::<UiState>();
             u.viewport = vp;
-            u.content_width = vp.width - px(sidebar_w) - px(48.);
+            u.content_width=px(crate::wetube_workspace::content_width(vp.width.into(),sidebar_w));
         }
         let fullscreen = ui.fullscreen && is_watch;
         let mut root = div()

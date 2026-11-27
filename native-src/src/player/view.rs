@@ -672,7 +672,7 @@ fn navigate_to_current(this: &mut PlayerView, window: &mut Window, cx: &mut Cont
 
 impl PlayerView {
     fn render_mini_controls(&self, show: bool, paused: bool, time: f64, duration: f64, cx: &mut Context<Self>) -> impl IntoElement {
-        let frac = if duration > 0.0 { (time / duration) as f32 } else { 0.0 };
+        let frac=crate::wetube_workspace::fraction(time,duration);
         let pp = self.player.clone();
         let pp2 = self.player.clone();
         let pp3 = self.player.clone();
@@ -800,7 +800,7 @@ impl PlayerView {
         let is_live = pl.streams.as_ref().map(|s| s.is_live).unwrap_or(false);
         let sb_show = store::settings_snapshot().sponsorblock;
         let sb_actions = store::settings_snapshot().sb_actions.clone();
-        let safe_fraction=|value:f64|if duration.is_finite()&&duration>0.0&&value.is_finite(){(value/duration).clamp(0.0,1.0) as f32}else{0.0};
+        let safe_fraction=|value:f64|crate::wetube_workspace::fraction(value,duration);
         let frac=safe_fraction(time);
         let cache_frac=safe_fraction(cache);
         let hover = self.hover_frac.filter(|_| duration > 0.0 && self.hovering);
@@ -982,7 +982,7 @@ impl PlayerView {
                 .child(icon(name).size_6().text_color(white()))
         };
         let vol_icon = if muted || volume <= 0.0 { "volume-x" } else if volume < 50.0 { "volume-1" } else { "volume-2" };
-        let vol_frac = if muted { 0.0 } else { (volume / 100.0).min(1.0) as f32 };
+        let vol_frac=if muted{0.0}else{crate::wetube_workspace::fraction(volume,100.0)};
         let time_text = if is_live {
             "● LIVE".to_string()
         } else {

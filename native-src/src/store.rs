@@ -309,10 +309,7 @@ fn normalize_settings(s: &mut Settings) {
             s.default_quality = 1080;
         }
     }
-    s.ui_scale = s.ui_scale.clamp(0.75, 1.5);
-    if s.ui_scale == 0.0 {
-        s.ui_scale = 1.0;
-    }
+    s.ui_scale = crate::wetube_workspace::scale(s.ui_scale);
 }
 
 pub fn settings_snapshot() -> Arc<Settings> {

@@ -184,7 +184,7 @@ pub fn near_bottom(handle: &ScrollHandle, margin: f32) -> bool {
 
 pub fn content_width(cx: &App) -> Pixels {
     let w = cx.global::<crate::ui::app::UiState>().content_width;
-    if w <= px(100.) { px(1000.) } else { w }
+    px(crate::wetube_workspace::finite_extent(w.into()))
 }
 
 /// Shared native workspace heading: hierarchy, context and theme-aware surface.
@@ -195,6 +195,14 @@ pub fn workspace_header(title: impl Into<SharedString>, subtitle: impl Into<Shar
         .child(div().flex().flex_col().flex_1().min_w_0().gap_1()
             .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(title.into()))
             .child(div().text_sm().text_color(p.text2).child(subtitle.into())))
+}
+
+/// A compact status tile for a workspace, not a clickable control.
+pub fn workspace_metric(label: impl Into<SharedString>, value: impl Into<SharedString>, cx: &App) -> Div {
+    let p=pal(cx);
+    div().flex().flex_col().flex_1().min_w(px(112.)).gap_1().p_3().rounded_lg().bg(p.surface2)
+        .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(value.into()))
+        .child(div().text_xs().text_color(p.text2).child(label.into()))
 }
 
 pub fn section_title(text: impl Into<SharedString>, cx: &App) -> Div {

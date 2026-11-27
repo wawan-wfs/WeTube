@@ -473,7 +473,8 @@ impl Player {
     }
 
     pub fn save_progress(&mut self, force: bool) {
-        if !self.loading { self.checkpoint_recovery(); }
+        if self.loading { return; }
+        self.checkpoint_recovery();
         if let Some(v) = &self.video {
             if force || self.time > 0.0 {
                 store::history_progress(&v.id, self.time, self.duration);
@@ -488,6 +489,8 @@ impl Player {
         if !crate::wetube_session::valid_id(&video.id) { toast(cx, "Invalid video ID"); return; }
         let start = start.filter(|t| t.is_finite() && (0.0..=604800.0).contains(t));
         self.save_progress(true);
+        let s=store::settings_snapshot();
+        let resume=crate::wetube_workspace::resume_position(start,store::history_position(&video.id),s.resume_playback);
         if let Some(prev) = &self.video {
             crate::api::web::report_stop(&prev.id, self.time);
         }
@@ -502,7 +505,7 @@ impl Player {
         self.video = Some(video.clone());
         self.loading = true;
         self.error = None;
-        self.time = start.unwrap_or(0.0);
+        self.time = resume.unwrap_or(0.0);
         self.last_progress_save = self.time;
         self.duration = video.duration_secs.unwrap_or(0) as f64;
         crate::wetube_recovery::begin_playback();
@@ -529,15 +532,7 @@ impl Player {
         crate::api::web::report_start(&video.id, self.duration);
         let s = store::settings_snapshot();
         let id = video.id.clone();
-        let resume = if start.is_some() {
-            start
-        } else if s.resume_playback {
-            store::history_position(&id).and_then(|(p, d)| {
-                (p > 10.0 && (d <= 0.0 || p < d - 15.0)).then_some(p)
-            })
-        } else {
-            None
-        };
+        // Resume was resolved before history_add and the initial recovery checkpoint.
         cx.notify();
         if s.annotations {
             self.load_annotations(cx);

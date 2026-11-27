@@ -25,6 +25,7 @@ mod wetube_publish;
 mod wetube_profile;
 mod wetube_journal;
 mod wetube_transfer;
+mod wetube_workspace;
 
 pub(crate) const PRODUCT_NAME: &str = "WeTube Desktop";
 pub(crate) const PRODUCT_CREDIT: &str = "by WFS Project";

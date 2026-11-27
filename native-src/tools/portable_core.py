@@ -8,7 +8,7 @@ import shutil
 import tomllib
 
 MODULES = ("wetube_resume", "wetube_profile", "wetube_process", "wetube_journal",
-           "wetube_session", "wetube_queue", "wetube_recovery", "wetube_links", "wetube_publish", "wetube_transfer")
+           "wetube_session", "wetube_queue", "wetube_recovery", "wetube_links", "wetube_publish", "wetube_transfer", "wetube_workspace")
 DEPS = {"anyhow": "", "serde": 'features = ["derive"]', "serde_json": "",
         "rand": "", "sha2": "", "rusqlite": 'features = ["bundled"]',
         "ureq": 'features = ["json", "socks-proxy"]'}

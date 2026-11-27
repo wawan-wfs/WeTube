@@ -24,8 +24,8 @@ pub fn open(cx: &mut App) {
     }
     let size = cx.primary_display().map(|d| {
         let b = d.bounds();
-        let w = px(480.).min((b.size.width - px(48.)).max(px(256.))).min((b.size.height - px(96.)).max(px(144.)) * (16.0 / 9.0));
-        size(w, w * (9.0 / 16.0))
+        let (w,h)=crate::wetube_workspace::fit_ratio(f32::from(b.size.width).min(480.0)-24.0,f32::from(b.size.height)-96.0,16.0/9.0);
+        size(px(w),px(h))
     }).unwrap_or(size(px(480.), px(270.)));
     let origin = cx
         .primary_display()

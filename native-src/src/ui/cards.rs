@@ -688,13 +688,7 @@ pub fn grid(items: Vec<AnyElement>, _avail: Pixels) -> Div {
 }
 
 pub fn grid_columns(avail: Pixels, min_card: f32) -> (usize, Pixels) {
-    let cfg = store::settings_snapshot().grid_columns as usize;
-    let gap = 16.0;
-    let w: f32 = avail.into();
-    let w = if w.is_finite() { w.max(1.0) } else { 1.0 };
-    let min_card = if min_card.is_finite() { min_card.max(120.0) } else { 240.0 };
-    let fit = (((w + gap) / (min_card + gap)).floor() as usize).clamp(1, 6);
-    let cols = if cfg > 0 { cfg.min(fit).max(1) } else { fit };
-    let card = (w - gap * (cols as f32 - 1.0)) / cols as f32;
-    (cols, px((card.floor() - 1.0).max(1.0)))
+    let s=store::settings_snapshot();
+    let (cols,card)=crate::wetube_workspace::grid(avail.into(),min_card,s.grid_columns as usize,s.ui_scale);
+    (cols,px(card))
 }

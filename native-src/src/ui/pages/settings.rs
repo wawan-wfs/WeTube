@@ -1198,8 +1198,9 @@ impl Render for SettingsPage {
         let p = pal(cx);
         let query = self.search.read(cx).value().trim().to_lowercase();
         QUERY.with(|q| *q.borrow_mut() = query.clone());
-        let compact=crate::wetube_workspace::compact(content_width(cx).into(),760.0,store::settings_snapshot().ui_scale);
-        let mut nav = div().flex().when(compact,|d|d.flex_wrap()).when(!compact,|d|d.flex_col()).gap_1().w(if compact{content_width(cx).max(px(240.))}else{px(240.)}).flex_none().child(
+        let layout=workspace_surface(crate::wetube_workspace::Workspace::Settings,cx);
+        let compact=layout.compact;
+        let mut nav = div().flex().when(compact,|d|d.flex_wrap()).when(!compact,|d|d.flex_col()).gap_1().w(px(layout.rail_width)).flex_none().child(
             div()
                 .flex()
                 .items_center()

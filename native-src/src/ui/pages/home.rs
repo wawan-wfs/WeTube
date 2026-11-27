@@ -333,8 +333,9 @@ impl Render for HomePage {
         let s = store::settings_snapshot();
         let has_more = self.continuation.is_some();
         maybe_load_more(&self.scroll, &mut self.loading_more, has_more, cx, |this, cx| this.load_more(cx));
-        let width = content_width(cx);
-        let (_, card_w) = grid_columns(width, 300.0);
+        let layout=workspace_surface(crate::wetube_workspace::Workspace::Home,cx);
+        let width=px(layout.width);
+        let (_, card_w) = grid_columns(width, layout.card_min);
         let mut chips = div().flex().flex_wrap().items_center().gap_2().py_3().px_6().bg(p.bg).child(
             chip(
                 "chip-all",
@@ -386,7 +387,7 @@ impl Render for HomePage {
                         items.into_iter().partition(|i| !matches!(i, Item::Video(v) if v.is_short));
                     let mut col = div().flex().flex_col().gap_8();
                     let cards: Vec<AnyElement> = videos.iter().map(|i| grid_item(i, card_w, true, cx)).collect();
-                    let split = cards.len().min(12);
+                    let split = cards.len().min(layout.columns * 2);
                     let mut cards = cards.into_iter();
                     col = col.child(grid(cards.by_ref().take(split).collect(), width));
                     if !shorts.is_empty() && !s.hide_shorts {

@@ -39,8 +39,9 @@ pub fn fit_ratio(width: f32, height: f32, aspect: f32) -> (f32,f32) {
 #[derive(Clone,Copy,Debug)]
 pub struct WatchLayout {pub primary:f32,pub side:f32,pub height:f32,pub two_columns:bool}
 pub fn watch(width:f32,height:f32,theater:bool,ui_scale:f32)->WatchLayout {
-    let avail=content_width(width,0.0);
-    let two_columns=!compact(avail,1120.0,ui_scale);
+    let layout=surface(Workspace::Watch,content_width(width,0.0),ui_scale);
+    let avail=layout.width;
+    let two_columns=!layout.compact;
     let side=if two_columns{402.0}else{avail};
     let primary=if two_columns{(avail-side-24.0).max(1.0).min(1280.0)}else{avail};
     let room=(finite_extent(height)-toolbar_height(width,ui_scale)-if theater{120.0}else{40.0}).max(1.0);
@@ -51,8 +52,9 @@ pub fn watch(width:f32,height:f32,theater:bool,ui_scale:f32)->WatchLayout {
 #[derive(Clone,Copy,Debug)]
 pub struct ShortsLayout {pub width:f32,pub height:f32,pub comments_width:f32,pub comments_overlay:bool}
 pub fn shorts(content:f32,viewport:f32,height:f32,comments:bool,ui_scale:f32)->ShortsLayout{
-    let content=finite_extent(content);
-    let overlay=comments&&compact(content,700.0,ui_scale);
+    let layout=surface(Workspace::Shorts,content,ui_scale);
+    let content=layout.width;
+    let overlay=comments&&layout.compact;
     let comments_width=if comments{(content-24.0).max(1.0).min(380.0)}else{0.0};
     let reserved=if comments&&!overlay{comments_width+164.0}else{164.0};
     let (width,height)=fit_ratio((content-reserved).max(1.0),(finite_extent(height)-toolbar_height(viewport,ui_scale)-32.0).max(1.0),9.0/16.0);
@@ -123,5 +125,69 @@ mod tests {
         assert_eq!(resume_position(Some(0.0),Some((30.0,100.0)),true),Some(0.0));assert_eq!(resume_position(None,Some((30.0,100.0)),true),Some(30.0));
         assert_eq!(resume_position(None,Some((98.0,100.0)),true),None);assert_eq!(resume_position(None,Some((30.0,100.0)),false),None);
         assert_eq!(resume_position(None,Some((f64::INFINITY,0.0)),true),None);assert_eq!(resume_position(None,Some((30.0,f64::NAN)),true),None);
+    }
+}
+
+/// Route-specific content policy. Widths are logical pixels; the shell already
+/// deducts the sidebar and gutters. Each page uses its own reading density.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum Workspace { Home, Watch, Shorts, Search, Channel, Subscriptions, Library, Playlist, Downloads, Settings }
+pub const WORKSPACES:[Workspace;10]=[Workspace::Home,Workspace::Watch,Workspace::Shorts,Workspace::Search,Workspace::Channel,Workspace::Subscriptions,Workspace::Library,Workspace::Playlist,Workspace::Downloads,Workspace::Settings];
+#[derive(Clone,Copy,Debug)]
+pub struct Surface {pub width:f32,pub compact:bool,pub card_min:f32,pub columns:usize,pub card_width:f32,pub rail_width:f32,pub thumbnail:f32}
+pub fn surface(page:Workspace,available:f32,ui_scale:f32)->Surface {
+    use Workspace::*;
+    let (max_width,breakpoint,card_min,rail,thumb):(f32,f32,f32,f32,f32) = match page {
+        Home => (1680., 760., 300., 0., 0.),
+        Watch => (1920.,1120., 280.,402., 0.),
+        Shorts => (1920.,700., 180.,380., 0.),
+        Search => (1280.,800., 260., 0.,360.),
+        Channel => (1284.,620., 280., 0.,160.),
+        Subscriptions => (1600.,760.,300., 0., 0.),
+        Library => (1440.,800.,260.,320., 0.),
+        Playlist => (1440.,920.,280.,360., 0.),
+        Downloads => (1100.,850.,260., 0.,160.),
+        Settings => (1160.,760.,240.,240., 0.),
+    };
+    let width=finite_extent(available).min(max_width);
+    let compact=compact(width,breakpoint,ui_scale);
+    let rail_width=if rail==0. {0.} else if compact {width} else {rail.min((width-24.).max(1.))};
+    let thumbnail=if thumb==0. {0.}else if compact {thumb.min((width*0.38).max(1.))}else{thumb.min(width)};
+    let (columns,card_width)=grid(width,card_min,0,ui_scale);
+    Surface{width,compact,card_min,columns,card_width,rail_width,thumbnail}
+}
+/// Guard a control rendered for an ordinal against stale item changes. Duplicate
+/// IDs remain valid occurrences; the caller additionally checks the active slot.
+pub fn queue_target<T>(items:&[T],index:usize,expected:&str,id:impl Fn(&T)->&str)->bool {
+    items.get(index).is_some_and(|item|id(item)==expected)
+}
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+    #[test] fn sixteen_viewports_all_ten_workspaces(){
+        for w in [720.,856.,1280.,1920.] {for s in [0.75,1.,1.25,1.5] {for page in WORKSPACES {
+            let watching=page==Workspace::Watch;
+            let content=content_width(w,sidebar_width(w,true,watching,s));
+            let a=surface(page,content,s);
+            assert!(a.width>0.&&a.width<=content);
+            assert!(a.card_width*a.columns as f32+16.*(a.columns-1) as f32<=a.width+0.001);
+            assert!(a.rail_width<=a.width&&a.thumbnail<=a.width);
+            if a.compact&&a.rail_width>0. {assert_eq!(a.rail_width,a.width);}
+        }}}
+    }
+    #[test] fn route_policies_preserve_independent_density(){
+        let home=surface(Workspace::Home,1800.,1.);
+        let settings=surface(Workspace::Settings,1800.,1.);
+        assert!(home.width>settings.width);assert!(home.card_min>settings.card_min);
+        assert!(surface(Workspace::Settings,800.,1.5).compact);
+        assert!(!surface(Workspace::Settings,1000.,1.).compact);
+        assert!(surface(Workspace::Search,400.,1.).thumbnail<=152.);
+    }
+    #[test] fn invalid_extent_and_stale_queue_target(){
+        for page in WORKSPACES {let l=surface(page,f32::NAN,f32::INFINITY);assert_eq!(l.width,1.);assert!(l.card_width.is_finite());}
+        let entries=["a","b","a"];
+        assert!(queue_target(&entries,2,"a",|x|*x));
+        assert!(!queue_target(&entries,1,"a",|x|*x));
+        assert!(!queue_target(&entries,usize::MAX,"a",|x|*x));
     }
 }

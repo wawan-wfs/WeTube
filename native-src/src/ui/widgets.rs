@@ -187,6 +187,11 @@ pub fn content_width(cx: &App) -> Pixels {
     px(crate::wetube_workspace::finite_extent(w.into()))
 }
 
+/// The actual route policy used by rendering and by the portable matrix.
+pub fn workspace_surface(page: crate::wetube_workspace::Workspace, cx:&App)->crate::wetube_workspace::Surface {
+    crate::wetube_workspace::surface(page,content_width(cx).into(),crate::store::settings_snapshot().ui_scale)
+}
+
 /// Shared native workspace heading: hierarchy, context and theme-aware surface.
 pub fn workspace_header(title: impl Into<SharedString>, subtitle: impl Into<SharedString>, symbol: &str, cx: &App) -> Div {
     let p=pal(cx);

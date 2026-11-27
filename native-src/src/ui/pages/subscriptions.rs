@@ -121,8 +121,9 @@ impl Render for FeedPage {
         if near_bottom(&self.scroll, 800.0) && self.shown < self.videos.len() {
             self.shown += 60;
         }
-        let width = content_width(cx);
-        let (_, card_w) = grid_columns(width, 300.0);
+        let layout=workspace_surface(crate::wetube_workspace::Workspace::Subscriptions,cx);
+        let width=px(layout.width);
+        let (_, card_w) = grid_columns(width,layout.card_min);
         if store::subscriptions().is_empty() && !crate::api::auth::signed_in() {
             return page_scroll("feed-scroll", &self.scroll)
                 .child(

@@ -141,8 +141,9 @@ impl Render for SearchPage {
         let s = store::settings_snapshot();
         let has_more = self.continuation.is_some();
         maybe_load_more(&self.scroll, &mut self.loading_more, has_more, cx, |this, cx| this.load_more(cx));
-        let width = content_width(cx).min(px(1280.));
-        let thumb_w = if width < px(540.) { (width*0.38).max(px(112.)) } else if width < px(900.) { px(240.) } else { px(360.) };
+        let layout=workspace_surface(crate::wetube_workspace::Workspace::Search,cx);
+        let width=px(layout.width);
+        let thumb_w=px(layout.thumbnail);
         let f = self.filter;
         let header = div()
             .flex()

@@ -23,7 +23,8 @@ impl DownloadsPage {
 impl Render for DownloadsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = pal(cx);
-        let compact=crate::wetube_workspace::compact(content_width(cx).into(),850.0,store::settings_snapshot().ui_scale);
+        let layout=workspace_surface(crate::wetube_workspace::Workspace::Downloads,cx);
+        let compact=layout.compact;
         let jobs_handle=cx.default_global::<Downloads>().jobs.clone();
         let dir = store::settings_snapshot().download_dir.clone();
         let ytdlp = crate::api::streams::ytdlp_path().is_some();
@@ -126,7 +127,7 @@ impl Render for DownloadsPage {
         page_scroll("dl-scroll", &self.scroll).child(
             div().flex().justify_center().px_6().pt_6().pb_24().child(
                 div()
-                    .w_full().max_w(px(1100.))
+                    .w_full().max_w(px(layout.width))
                     .flex()
                     .flex_col()
                     .gap_4()

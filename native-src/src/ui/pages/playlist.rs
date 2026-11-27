@@ -205,8 +205,9 @@ impl Render for PlaylistPage {
         let remote_info = self.info.clone();
         let saved = remote_info.as_ref().map(|i| store::is_playlist_saved(&i.id)).unwrap_or(false);
         let owner = self.owner.clone();
-        let compact=crate::wetube_workspace::compact(content_width(cx).into(),920.0,store::settings_snapshot().ui_scale);
-        let compact_width=(content_width(cx)-px(24.)).max(px(200.));
+        let layout=workspace_surface(crate::wetube_workspace::Workspace::Playlist,cx);
+        let compact=layout.compact;
+        let compact_width=px(layout.rail_width);
         let header = div()
             .flex()
             .flex_col()

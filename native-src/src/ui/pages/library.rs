@@ -354,8 +354,9 @@ impl LibraryPage {
 impl Render for LibraryPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = pal(cx);
-        let width = content_width(cx);
-        let (_, w) = grid_columns(width, 260.0);
+        let layout=workspace_surface(crate::wetube_workspace::Workspace::Library,cx);
+        let width=px(layout.width);
+        let (_, w) = grid_columns(width,layout.card_min);
         let pls = store::playlists();
         let q = self.filter.read(cx).value().trim().to_lowercase();
         let count = pls.iter().filter(|pl| pl.name.to_lowercase().contains(&q)).count();

@@ -1,0 +1,52 @@
+name: WeTube native dependency bootstrap
+# Provisioning only, not an acceptance or deployment workflow.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/native-dependency-bootstrap.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: wetube-native-dependency-bootstrap
+  cancel-in-progress: false
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Provision locked native registry sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.100.0 --profile minimal
+          mkdir -p "$RUNNER_TEMP/wetube-native/deps"
+          (
+            cd native-src
+            rustup run 1.100.0 cargo vendor --locked --versioned-dirs "$RUNNER_TEMP/wetube-native/deps/vendor"
+          )
+          cp native-src/Cargo.lock "$RUNNER_TEMP/wetube-native/deps/Cargo.lock"
+          python native-src/tools/native_dependency_audit.py --lock native-src/Cargo.lock --vendor "$RUNNER_TEMP/wetube-native/deps/vendor" --verify-files --require-full --report "$RUNNER_TEMP/wetube-native/deps/inventory.json"
+          git diff --exit-code -- native-src/Cargo.lock
+      - name: Package dependency sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          tar --dereference --hard-dereference -C "$RUNNER_TEMP/wetube-native" -czf export/native-deps.tar.gz deps
+          (cd export && sha256sum native-deps.tar.gz > native-deps.sha256)
+          cp "$RUNNER_TEMP/wetube-native/deps/inventory.json" export/inventory.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wetube-native-locked-dependencies
+          path: export/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error

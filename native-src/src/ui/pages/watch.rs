@@ -1292,6 +1292,7 @@ impl WatchPage {
             let up = pl.clone();
             let down = pl.clone();
             let remove = pl.clone();
+            let play_id=v.id.clone();let up_id=play_id.clone();let down_id=play_id.clone();let remove_id=play_id.clone();
             list = list.child(
                 div()
                     .flex()
@@ -1301,12 +1302,12 @@ impl WatchPage {
                     .child(div().flex_1().min_w_0().child(compact_row(
                         v,
                         pos == Some(i),
-                        Some(Arc::new(move |_, cx: &mut App| plc.update(cx, |p, cx| p.play_queue_index(i, cx)))),
+                        Some(Arc::new(move |_, cx: &mut App| plc.update(cx, |p, cx| {if crate::wetube_workspace::queue_target(&p.queue,i,&play_id,|v|v.id.as_str()){p.play_queue_index(i,cx)}}))),
                         cx,
                     )))
-                    .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{i}")), None, "↑", cx).on_click(move |_, _, cx| up.update(cx, |p, cx| { if crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, true) { p.checkpoint_recovery(); } cx.notify(); }))))
-                    .when(i + 1 < len, |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { if crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, false) { p.checkpoint_recovery(); } cx.notify(); }))))
-                    .when(pos != Some(i), |d| d.child(icon_button(SharedString::from(format!("queue-remove-{i}")), "x", cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { if crate::wetube_queue::remove_item(&mut p.queue, &mut p.queue_pos, i) { p.checkpoint_recovery(); } cx.notify(); })))),
+                    .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{i}")), None, "↑", cx).on_click(move |_, _, cx| up.update(cx, |p, cx| { if crate::wetube_workspace::queue_target(&p.queue,i,&up_id,|v|v.id.as_str()) && crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, true) { p.checkpoint_recovery(); } cx.notify(); }))))
+                    .when(i + 1 < len, |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { if crate::wetube_workspace::queue_target(&p.queue,i,&down_id,|v|v.id.as_str()) && crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, false) { p.checkpoint_recovery(); } cx.notify(); }))))
+                    .when(pos != Some(i), |d| d.child(icon_button(SharedString::from(format!("queue-remove-{i}")), "x", cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { if crate::wetube_workspace::queue_target(&p.queue,i,&remove_id,|v|v.id.as_str()) && crate::wetube_queue::remove_item(&mut p.queue, &mut p.queue_pos, i) { p.checkpoint_recovery(); } cx.notify(); })))),
             );
         }
         let plc2 = pl.clone();
@@ -1487,7 +1488,7 @@ impl Render for WatchPage {
         }
         let vp = ui.viewport;
         let geometry=crate::wetube_workspace::watch(vp.width.into(),vp.height.into(),ui.theater,store::settings_snapshot().ui_scale);
-        let avail=px(crate::wetube_workspace::content_width(vp.width.into(),0.0));
+        let avail=px(crate::wetube_workspace::surface(crate::wetube_workspace::Workspace::Watch,crate::wetube_workspace::content_width(vp.width.into(),0.0),store::settings_snapshot().ui_scale).width);
         let side_w=px(geometry.side);
         let two_col=geometry.two_columns;
         let primary_w=px(geometry.primary);

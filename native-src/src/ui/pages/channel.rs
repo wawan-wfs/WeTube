@@ -194,7 +194,8 @@ impl Render for ChannelPage {
         let p = pal(cx);
         let has_more = self.continuation.is_some();
         maybe_load_more(&self.scroll, &mut self.loading_more, has_more, cx, |this, cx| this.load_more(cx));
-        let width = content_width(cx).min(px(1284.));
+        let layout=workspace_surface(crate::wetube_workspace::Workspace::Channel,cx);
+        let width=px(layout.width);
         let d = match &self.data {
             Load::Loading => return page_scroll("ch-scroll", &self.scroll).child(spinner(cx)).into_any_element(),
             Load::Error(e) => return page_scroll("ch-scroll", &self.scroll).child(error_state(e, cx)).into_any_element(),
@@ -218,7 +219,7 @@ impl Render for ChannelPage {
                     .items_center()
                     .gap_4()
                     .p_4().rounded_xl().border_1().border_color(p.border).bg(p.surface)
-                    .when(crate::wetube_workspace::compact(width.into(),620.0,s.ui_scale),|d|d.flex_col().items_start())
+                    .when(layout.compact,|d|d.flex_col().items_start())
                     .child(avatar(d.info.avatar.as_deref(), if width<px(620.){px(88.)}else{px(160.)}, &d.info.name, cx))
                     .child(
                         div()

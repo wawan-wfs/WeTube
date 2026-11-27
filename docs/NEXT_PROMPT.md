@@ -34,3 +34,5 @@ Accepted b4d617f9 baseline run 45850753786: all five offline jobs passed, 68 Rus
 
 ## Hybrid local-first checkpoint
 Extract production SQLite journal into a GPUI-independent module; impose 64 MiB aggregate JSON budget before materialization, row size and count limits, migration-marker enforcement, no resurrection, atomic terminal cleanup. Load journal before duplicate admission. Preserve all previous acceptance tests; new portable harness and local bootstrap documented separately. Baseline 0225f623 source gate PASS, Windows gate not terminal at start. No release/deployment.
+
+Use docs/HYBRID_LOCAL_CI.md and native-src/tools/hybrid_ci.py for all future local-first batches. Recover the pinned Linux toolchain and portable dependencies from the provisioning workflow, verify archive hashes and matching lock, import locally, and run real portable Rust tests offline. Preserve native mandatory Windows CI. Portable tests use adapters and cannot prove native GUI, Windows process control or online provider playback.

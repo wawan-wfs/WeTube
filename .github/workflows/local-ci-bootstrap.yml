@@ -1,0 +1,78 @@
+name: WeTube local Linux toolchain bootstrap
+# Provisioning only; this is not a recurring Linux acceptance gate.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/local-ci-bootstrap.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: wetube-local-bootstrap
+  cancel-in-progress: false
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      WETUBE_RUST_VERSION: '1.100.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install official pinned Linux toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$WETUBE_RUST_VERSION" --profile minimal --component rustfmt
+          rustup run "$WETUBE_RUST_VERSION" rustc -Vv
+      - name: Resolve portable subset from native lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export/deps
+          python native-src/tools/portable_core.py native-src "$RUNNER_TEMP/wetube-core"
+          (
+            cd "$RUNNER_TEMP/wetube-core"
+            rustup run "$WETUBE_RUST_VERSION" cargo metadata --format-version 1 > /dev/null
+          )
+          python native-src/tools/portable_core.py native-src "$RUNNER_TEMP/wetube-core" --verify-lock
+          (
+            cd "$RUNNER_TEMP/wetube-core"
+            rustup run "$WETUBE_RUST_VERSION" cargo vendor --locked "$GITHUB_WORKSPACE/export/deps/vendor"
+          )
+          cp "$RUNNER_TEMP/wetube-core/Cargo.lock" export/deps/Cargo.lock
+          python -c 'import hashlib,json,os,pathlib; p=pathlib.Path("native-src/Cargo.lock"); pathlib.Path("export/deps/bundle.json").write_text(json.dumps({"native_lock_sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"rust_version":os.environ["WETUBE_RUST_VERSION"],"source_commit":os.environ["GITHUB_SHA"],"target":"x86_64-unknown-linux-gnu"},indent=2))'
+      - name: Export verified source dependencies and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sysroot="$(rustup run "$WETUBE_RUST_VERSION" rustc --print sysroot)"
+          mkdir -p "$RUNNER_TEMP/wetube-export"
+          ln -s "$sysroot" "$RUNNER_TEMP/wetube-export/toolchain"
+          tar --dereference --hard-dereference -C "$RUNNER_TEMP/wetube-export" -czf export/toolchain.tar.gz toolchain
+          tar --dereference --hard-dereference -C export -czf export/portable-deps.tar.gz deps
+          (cd export && sha256sum toolchain.tar.gz > toolchain.sha256 && sha256sum portable-deps.tar.gz > portable-deps.sha256)
+          du -h export/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wetube-linux-toolchain-1.100.0
+          path: |
+            export/toolchain.tar.gz
+            export/toolchain.sha256
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wetube-portable-dependencies
+          path: |
+            export/portable-deps.tar.gz
+            export/portable-deps.sha256
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error

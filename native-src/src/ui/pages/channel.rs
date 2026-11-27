@@ -216,9 +216,10 @@ impl Render for ChannelPage {
                 div()
                     .flex()
                     .items_center()
-                    .gap_6()
+                    .gap_4()
                     .py_2()
-                    .child(avatar(d.info.avatar.as_deref(), px(160.), &d.info.name, cx))
+                    .when(width<px(620.),|d|d.flex_col().items_start())
+                    .child(avatar(d.info.avatar.as_deref(), if width<px(620.){px(88.)}else{px(160.)}, &d.info.name, cx))
                     .child(
                         div()
                             .flex()

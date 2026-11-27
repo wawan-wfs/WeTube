@@ -142,10 +142,12 @@ impl Render for SearchPage {
         let has_more = self.continuation.is_some();
         maybe_load_more(&self.scroll, &mut self.loading_more, has_more, cx, |this, cx| this.load_more(cx));
         let width = content_width(cx).min(px(1280.));
-        let thumb_w = if width < px(900.) { px(240.) } else { px(360.) };
+        let thumb_w = if width < px(540.) { (width*0.38).max(px(112.)) } else if width < px(900.) { px(240.) } else { px(360.) };
         let f = self.filter;
         let header = div()
             .flex()
+            .flex_wrap()
+            .gap_2()
             .items_center()
             .justify_between()
             .pb_2()
@@ -220,7 +222,7 @@ impl Render for SearchPage {
                             .border_b_1()
                             .border_color(p.border)
                             .child(div().flex().items_center().gap_2().child(icon("zap").text_color(p.accent)).child(section_title("Shorts", cx)))
-                            .child(div().flex().gap_4().overflow_hidden().children(shorts.iter().take(6).map(|v| shorts_card(v, px(190.), cx)))),
+                            .child(div().flex().flex_wrap().gap_3().children(shorts.iter().take(6).map(|v| shorts_card(v, if width<px(540.){px(130.)}else{px(190.)}, cx)))),
                     );
                 }
                 if items.is_empty() {

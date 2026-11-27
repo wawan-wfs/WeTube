@@ -425,7 +425,13 @@ impl Render for LibraryPage {
                 .pb_24()
                 .child(div().flex().flex_col().gap_3().p_5().rounded_xl().bg(p.surface).border_1().border_color(p.border)
                     .child(workspace_header("Your library", "Playlists, saved videos and playback recovery", "library", cx))
-                    .child(div().text_sm().text_color(p.text2).child(format!("{} local playlists · {} saved entries · on this device", pls.len(), total_videos)))
+                    .child(div().flex().flex_wrap().gap_3()
+                        .child(div().flex_1().min_w(px(132.)).p_3().rounded_lg().bg(p.surface2)
+                            .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(pls.len().to_string()))
+                            .child(div().text_xs().text_color(p.text2).child("Local playlists")))
+                        .child(div().flex_1().min_w(px(132.)).p_3().rounded_lg().bg(p.surface2)
+                            .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(total_videos.to_string()))
+                            .child(div().text_xs().text_color(p.text2).child("Saved entries on this device"))))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(pill("lib-go-history", Some("history"), "Watch history", cx).on_click(|_, window, cx| navigate(Route::History, window, cx)))
                         .child(pill("lib-new-playlist", Some("plus"), "New playlist", cx).on_click(|_, window, cx| {
@@ -433,7 +439,7 @@ impl Render for LibraryPage {
                         })))
                     .child(div().flex().items_center().gap_2().child(icon("search").size_4().text_color(p.text2)).child(Input::new(&self.filter).appearance(false).cleanable(true)))
                     .child(div().text_xs().text_color(p.text2).child(format!("Showing {count} of {} playlists", pls.len())))
-                    .child(div().flex().items_center().gap_2().child(pill("wetube-restore-queue", Some("list-video"), "Play saved queue", cx).on_click(|_, window, cx| {
+                    .child(div().flex().flex_wrap().items_center().gap_2().child(pill("wetube-restore-queue", Some("list-video"), "Play saved queue", cx).on_click(|_, window, cx| {
                         match crate::wetube_queue::load() {
                             Ok(Some((videos, selected))) => {
                                 let id = videos[selected].id.clone();

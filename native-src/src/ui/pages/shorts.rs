@@ -602,8 +602,9 @@ impl Render for ShortsPage {
         let v = self.list[self.idx].clone();
         // Comments occupy horizontal space; keep the video within the viewport.
         let reserved = if self.show_comments { px(460.) } else { px(128.) };
-        let available_w = (ui.viewport.width - reserved).max(px(140.));
-        let h = (ui.viewport.height - px(56. + 32.)).max(px(160.)).min(available_w * (16. / 9.));
+        let available_w = (ui.content_width - reserved).max(px(140.));
+        let header=if ui.viewport.width<px(1050.){104.}else{56.};
+        let h = (ui.viewport.height - px(header + 32.)).max(px(160.)).min(available_w * (16. / 9.));
         let w = h * (9. / 16.);
         let votes = self.votes.get(&v.id).cloned();
         let cid = v.channel_id.clone();

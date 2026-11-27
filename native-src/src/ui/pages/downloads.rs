@@ -23,6 +23,7 @@ impl DownloadsPage {
 impl Render for DownloadsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = pal(cx);
+        let compact=content_width(cx)<px(850.);
         let jobs = cx.default_global::<Downloads>().jobs.lock().clone();
         let dir = store::settings_snapshot().download_dir.clone();
         let ytdlp = crate::api::streams::ytdlp_path().is_some();
@@ -59,7 +60,8 @@ impl Render for DownloadsPage {
                 div()
                     .flex()
                     .items_center()
-                    .gap_4()
+                    .when(compact,|d|d.flex_wrap().items_start())
+                    .gap_3()
                     .p_3()
                     .rounded_xl()
                     .bg(p.surface)
@@ -68,7 +70,7 @@ impl Render for DownloadsPage {
                             .id(SharedString::from(format!("dlt-{id}")))
                             .cursor_pointer()
                             .on_click(move |_, window, cx| navigate(Route::Watch { id: vid.clone(), playlist: None, start: None }, window, cx))
-                            .child(img(SharedString::from(j.video.thumbnail.clone())).w(px(160.)).h(px(90.)).rounded_lg().object_fit(ObjectFit::Cover)),
+                            .child(img(SharedString::from(j.video.thumbnail.clone())).w(if compact{px(112.)}else{px(160.)}).h(if compact{px(63.)}else{px(90.)}).rounded_lg().object_fit(ObjectFit::Cover)),
                     )
                     .child(
                         div()
@@ -134,7 +136,7 @@ impl Render for DownloadsPage {
                                     .flex()
                                     .gap_2()
                                     .when(jobs.iter().any(|j| !matches!(j.status, JobStatus::Running | JobStatus::Queued)), |d| {
-                                        d.child(pill("dl-clear", Some("list-x"), "Clear list", cx).on_click(|_, _, cx| crate::downloads::clear_history(cx)))
+                                        d.child(pill("dl-clear", Some("list-x"), "Clear list", cx).on_click(|_,window,cx|crate::ui::app::confirm("Clear download history?", "Completed and interrupted entries and their recovery metadata are removed. Media and partial files stay on disk.", "Clear list", window,cx,|_,cx|crate::downloads::clear_history(cx))))
                                     })
                                     .child(pill("dl-change", Some("folder-cog"), "Change folder", cx).on_click(|_, _, cx| {
                                         let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Save downloads here".into()) });

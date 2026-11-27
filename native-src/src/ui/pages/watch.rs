@@ -1479,12 +1479,12 @@ impl Render for WatchPage {
         let vp = ui.viewport;
         let avail = (vp.width - px(48.)).max(px(160.));
         let side_w = px(402.);
-        let two_col = avail > px(1000.);
+        let two_col = avail > px(1120.);
         let primary_w = if two_col { (avail - side_w - px(24.)).min(px(1280.)) } else { avail };
         let player_h = if ui.theater {
             (vp.width * (9. / 16.)).min((vp.height - px(56. + 120.)).max(px(90.)))
         } else {
-            primary_w * (9. / 16.)
+            (primary_w * (9. / 16.)).min((vp.height-px(if vp.width<px(1050.){144.}else{96.})).max(px(160.)))
         };
         let info = match &self.info {
             Load::Ready(w) => Some(w.clone()),

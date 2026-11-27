@@ -206,19 +206,20 @@ impl Render for PlaylistPage {
         let saved = remote_info.as_ref().map(|i| store::is_playlist_saved(&i.id)).unwrap_or(false);
         let owner = self.owner.clone();
         let compact = content_width(cx) < px(920.);
+        let compact_width=(content_width(cx)-px(24.)).max(px(200.));
         let header = div()
             .flex()
             .flex_col()
             .flex_none()
             .gap_4()
-            .w(if compact { (content_width(cx)-px(48.)).max(px(240.)) } else { px(360.) })
+            .w(if compact { compact_width } else { px(360.) })
             .p_6()
             .rounded_2xl()
             .bg(linear_gradient(180., linear_color_stop(p.hover, 0.), linear_color_stop(p.bg, 1.)))
             .child(
                 div()
                     .w_full()
-                    .h(px(176.))
+                    .h(if compact{(compact_width*0.36).clamp(px(96.),px(220.))}else{px(176.)})
                     .rounded_xl()
                     .overflow_hidden()
                     .bg(p.surface)

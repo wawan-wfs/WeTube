@@ -2064,13 +2064,15 @@ impl AppView {
         let hist: std::collections::HashSet<String> = self.history_suggestions.iter().cloned().collect();
         let sel = self.sel_suggestion;
         let maximized = window.is_maximized();
+        let compact=window.viewport_size().width<px(1050.);
         div()
             .id("topbar")
             .flex()
             .flex_none()
             .items_center()
-            .h(px(56.))
-            .pl_4()
+            .h(if compact{px(104.)}else{px(56.)})
+            .when(compact,|d|d.flex_wrap().gap_1())
+            .px_3()
             .bg(p.bg)
             .border_b_1()
             .border_color(p.border)
@@ -2111,7 +2113,7 @@ impl AppView {
             )
             // only the empty gaps move the window: gpui reports the first matching control
             // area, so a drag area around the buttons would swallow their clicks
-            .child(drag_gap("drag-l"))
+            .when(!compact,|d|d.child(drag_gap("drag-l")))
             .child(
                 div()
                     .relative()
@@ -2119,8 +2121,8 @@ impl AppView {
                     .items_center()
                     // YouTube-width search box that gives way on narrow windows
                     .flex_shrink(1.)
-                    .min_w(px(220.))
-                    .w(px(640.))
+                    .min_w(if compact{px(140.)}else{px(220.)})
+                    .w(if compact{px(250.)}else{px(640.)})
                     .child(
                         div()
                             .flex()
@@ -2210,7 +2212,7 @@ impl AppView {
                         )
                     }),
             )
-            .child(drag_gap("drag-r"))
+            .when(!compact,|d|d.child(drag_gap("drag-r")))
             .child(
                 div()
                     .flex()
@@ -2230,7 +2232,7 @@ impl AppView {
         let route = self.route.clone();
         let is_watch = matches!(route, Route::Watch { .. });
         let s = store::settings_snapshot();
-        if !ui.sidebar_open && !is_watch {
+        if (!ui.sidebar_open || ui.viewport.width<px(1000.)) && !is_watch {
             // compact rail
             let rail = |id: &'static str, ic: &'static str, label: &'static str, r: Route, active: bool, cx: &mut Context<Self>| {
                 div()
@@ -3059,7 +3061,7 @@ impl Render for AppView {
         let is_watch = matches!(self.route, Route::Watch { .. });
         let sidebar_w = if is_watch {
             0.0
-        } else if ui.sidebar_open {
+        } else if ui.sidebar_open && vp.width>=px(1000.) {
             232.0
         } else {
             72.0

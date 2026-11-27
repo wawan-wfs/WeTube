@@ -1198,7 +1198,8 @@ impl Render for SettingsPage {
         let p = pal(cx);
         let query = self.search.read(cx).value().trim().to_lowercase();
         QUERY.with(|q| *q.borrow_mut() = query.clone());
-        let mut nav = div().flex().flex_col().gap_1().w(px(240.)).flex_none().child(
+        let compact=content_width(cx)<px(760.);
+        let mut nav = div().flex().when(compact,|d|d.flex_wrap()).when(!compact,|d|d.flex_col()).gap_1().w(if compact{content_width(cx).max(px(240.))}else{px(240.)}).flex_none().child(
             div()
                 .flex()
                 .items_center()
@@ -1260,7 +1261,7 @@ impl Render for SettingsPage {
             }
             QUERY.with(|q| q.borrow_mut().clear());
             return page_scroll("settings-scroll", &self.scroll).child(
-                div().flex().justify_center().gap_8().px_6().pt_6().pb_24().child(nav).child(
+                div().flex().justify_center().gap_4().px_6().pt_6().pb_24().when(compact,|d|d.flex_col()).child(nav).child(
                     div().flex().flex_col().gap_4().flex_1().max_w(px(860.)).min_w_0().child(section_title(&format!("Results for “{query}”"), cx).text_2xl()).child(all),
                 ),
             );
@@ -1281,7 +1282,7 @@ impl Render for SettingsPage {
         };
         let title = SECTIONS.iter().find(|s| s.0 == self.section).map(|s| s.1).unwrap_or("");
         page_scroll("settings-scroll", &self.scroll).child(
-            div().flex().justify_center().gap_8().px_6().pt_6().pb_24().child(nav).child(
+            div().flex().justify_center().gap_4().px_6().pt_6().pb_24().when(compact,|d|d.flex_col()).child(nav).child(
                 div()
                     .flex()
                     .flex_col()

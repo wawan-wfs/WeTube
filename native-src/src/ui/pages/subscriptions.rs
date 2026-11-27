@@ -168,6 +168,7 @@ impl Render for FeedPage {
         let (done, total) = (self.progress.0.load(Ordering::SeqCst), self.progress.1.load(Ordering::SeqCst));
         let header = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .justify_between()
             .gap_4()
@@ -178,6 +179,7 @@ impl Render for FeedPage {
                     .flex()
                     .items_center()
                     .gap_3()
+                    .flex_wrap()
                     .when_some(self.last_updated.filter(|_| !self.refreshing), |d, t| d.child(div().text_xs().text_color(p.text2).child(format!("Updated {}", crate::api::json::relative_from_ts(t)))))
                     .when(self.refreshing, |d| d.child(div().text_xs().text_color(p.text2).child(if total == 0 { "Refreshing…".to_string() } else { format!("Refreshing {done}/{total}…") })))
                     .child(

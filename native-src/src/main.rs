@@ -23,6 +23,7 @@ mod wetube_process;
 mod wetube_resume;
 mod wetube_publish;
 mod wetube_profile;
+mod wetube_journal;
 
 pub(crate) const PRODUCT_NAME: &str = "WeTube Desktop";
 pub(crate) const PRODUCT_CREDIT: &str = "by WFS Project";
@@ -75,7 +76,7 @@ fn main() {
     // Hold the profile lock until GUI shutdown; runtime CLI does not use the profile.
     let _profile = match wetube_profile::ProfileLock::acquire(&store::data_dir()) {
         Ok(lock)=>lock,
-        Err(e)=>{eprintln!("WeTube profile is busy or inaccessible: {e}");return;}
+        Err(e)=>{eprintln!("WeTube profile is busy or inaccessible: {e}");std::process::exit(2);}
     };
     perf::mark("main");
     // the local stream proxy must never be reached through the user's proxy

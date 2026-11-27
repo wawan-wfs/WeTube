@@ -566,112 +566,17 @@ pub fn kv_get(key: &str) -> Option<String> {
 pub fn wetube_kv_set(key: &str, v: &str) -> bool { save_setting_json(key, &v).is_ok() }
 
 /// Checked local state read. Existing legacy KV format remains unchanged.
-const JOB_JOURNAL_MARKER:&str="wetube_download_journal_v2";
-const JOB_ROW_LIMIT:usize=64*1024;
-const JOB_COUNT_LIMIT:usize=50_000;
-/// None means legacy migration has not committed. Empty Some means an empty
-/// migrated journal, never a reason to resurrect the legacy snapshot.
 pub fn download_rows()->Result<Option<Vec<(String,String)>>> {
-    let c=db().lock();
-    let marked:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM kv WHERE key=?1)",[JOB_JOURNAL_MARKER],|r|r.get(0))?;
-    if !marked {
-        let count:i64=c.query_row("SELECT COUNT(*) FROM wetube_download_jobs",[],|r|r.get(0))?;
-        anyhow::ensure!(count==0,"Unmarked download journal is not empty");
-        return Ok(None);
-    }
-    let count:i64=c.query_row("SELECT COUNT(*) FROM wetube_download_jobs",[],|r|r.get(0))?;
-    anyhow::ensure!((0..=JOB_COUNT_LIMIT as i64).contains(&count),"Download journal exceeds row limit");
-    let mut stmt=c.prepare("SELECT job_id, CASE WHEN length(CAST(json AS BLOB))<=?1 THEN json ELSE NULL END FROM wetube_download_jobs ORDER BY ordinal,job_id")?;
-    let mut rows=stmt.query([JOB_ROW_LIMIT as i64])?;
-    let mut result=Vec::with_capacity(count as usize);
-    while let Some(row)=rows.next()? {
-        let id:String=row.get(0)?;
-        let payload:Option<String>=row.get(1)?;
-        result.push((id,payload.ok_or_else(||anyhow::anyhow!("Oversized download row"))?));
-    }
-    Ok(Some(result))
+    crate::wetube_journal::read_rows(&db().lock())
 }
-/// Atomic snapshot reconciliation, updating only changed rows; retain the
-/// migration marker; delete the obsolete legacy snapshot in the same transaction.
 pub fn write_download_rows(rows:&[(String,String)])->Result<()> {
-    write_download_rows_to(&mut db().lock(),rows)
+    crate::wetube_journal::write_rows(&mut db().lock(),rows)
 }
-/// Worker state transitions only touch the existing row. A missing row is an
-/// error: a late worker must not resurrect a deleted or restarted job.
 pub fn update_download_row(id:&str,payload:&str,done:bool)->Result<()> {
-    let mut c=db().lock();
-    let tx=c.transaction()?;
-    update_download_row_in(&tx,id,payload)?;
-    if done {
-        tx.execute("DELETE FROM kv WHERE key IN (?1,?2)",params![format!("wetube_publish_{id}"),format!("wetube_resume_{id}")])?;
-    }
-    tx.commit()?;
-    Ok(())
+    crate::wetube_journal::update_row(&mut db().lock(),id,payload,done)
 }
-/// Admit one row without serializing the entire existing history.
 pub fn insert_download_row(id:&str,payload:&str)->Result<()> {
-    anyhow::ensure!(id.len()==32&&id.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))&&payload.len()<=JOB_ROW_LIMIT,"Invalid download journal row");
-    let mut c=db().lock();let tx=c.transaction()?;
-    let count:i64=tx.query_row("SELECT COUNT(*) FROM wetube_download_jobs",[],|r|r.get(0))?;
-    anyhow::ensure!(count<JOB_COUNT_LIMIT as i64,"Download journal full");
-    tx.execute("INSERT INTO wetube_download_jobs(job_id,ordinal,json) SELECT ?1,COALESCE(MAX(ordinal),-1)+1,?2 FROM wetube_download_jobs",params![id,payload])?;
-    tx.commit()?;Ok(())
-}
-fn update_download_row_in(c:&Connection,id:&str,payload:&str)->Result<()> {
-    anyhow::ensure!(payload.len()<=JOB_ROW_LIMIT,"Oversized download row");
-    let changed=c.execute("UPDATE wetube_download_jobs SET json=?2 WHERE job_id=?1",params![id,payload])?;
-    anyhow::ensure!(changed==1,"Download job not found in journal");
-    Ok(())
-}
-fn write_download_rows_to(c:&mut Connection,rows:&[(String,String)])->Result<()> {
-    anyhow::ensure!(rows.len()<=JOB_COUNT_LIMIT,"Download journal is full");
-    let tx=c.transaction()?;
-    tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS wetube_seen_jobs(job_id TEXT PRIMARY KEY); DELETE FROM wetube_seen_jobs;")?;
-    {
-        let mut seen=tx.prepare_cached("INSERT INTO wetube_seen_jobs(job_id) VALUES(?1)")?;
-        let mut up=tx.prepare_cached("INSERT INTO wetube_download_jobs(job_id,ordinal,json) VALUES(?1,?2,?3)
-            ON CONFLICT(job_id) DO UPDATE SET ordinal=excluded.ordinal,json=excluded.json
-            WHERE wetube_download_jobs.ordinal<>excluded.ordinal OR wetube_download_jobs.json<>excluded.json")?;
-        for (i,(id,payload)) in rows.iter().enumerate() {
-            anyhow::ensure!(id.len()==32&&id.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))&&payload.len()<=JOB_ROW_LIMIT,"Invalid download journal row");
-            seen.execute([id])?;
-            up.execute(params![id,i as i64,payload])?;
-        }
-    }
-    // Only delete recovery metadata of rows explicitly removed by reconciliation.
-    tx.execute("DELETE FROM kv WHERE key IN (SELECT 'wetube_publish_'||job_id FROM wetube_download_jobs WHERE job_id NOT IN (SELECT job_id FROM wetube_seen_jobs)) OR key IN (SELECT 'wetube_resume_'||job_id FROM wetube_download_jobs WHERE job_id NOT IN (SELECT job_id FROM wetube_seen_jobs))",[])?;
-    tx.execute("DELETE FROM wetube_download_jobs WHERE job_id NOT IN (SELECT job_id FROM wetube_seen_jobs)",[])?;
-    tx.execute("INSERT OR IGNORE INTO kv(key,value) VALUES(?1,'2')",[JOB_JOURNAL_MARKER])?;
-    // Migration marker and removal of legacy private history commit together.
-    tx.execute("DELETE FROM kv WHERE key='download_history'",[])?;
-    tx.commit()?;
-    Ok(())
-}
-#[cfg(test)]
-mod download_row_tests {
-    use super::*;
-    #[test]
-    fn migration_marker_and_rollback(){
-        let mut c=Connection::open_in_memory().unwrap();
-        c.execute_batch(TABLES).unwrap();
-        let a="a".repeat(32);let b="b".repeat(32);
-        c.execute("INSERT INTO kv VALUES('download_history','legacy private history')",[]).unwrap();
-        write_download_rows_to(&mut c,&[(a.clone(),"one".into()),(b.clone(),"two".into())]).unwrap();
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM kv WHERE key='download_history'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
-        c.execute("INSERT INTO kv VALUES(?1,'intent')",[format!("wetube_publish_{a}")]).unwrap();
-        assert!(write_download_rows_to(&mut c,&[(a.clone(),"changed".into()),(a.clone(),"duplicate".into())]).is_err());
-        let old:String=c.query_row("SELECT json FROM wetube_download_jobs WHERE job_id=?1",[&a],|r|r.get(0)).unwrap();
-        assert_eq!(old,"one");
-        update_download_row_in(&c,&a,"new").unwrap();
-        assert!(update_download_row_in(&c,&"c".repeat(32),"missing").is_err());
-        let unchanged:String=c.query_row("SELECT json FROM wetube_download_jobs WHERE job_id=?1",[&b],|r|r.get(0)).unwrap();
-        assert_eq!(unchanged,"two");
-        write_download_rows_to(&mut c,&[]).unwrap();
-        let count:i64=c.query_row("SELECT COUNT(*) FROM wetube_download_jobs",[],|r|r.get(0)).unwrap();
-        let marker:i64=c.query_row("SELECT COUNT(*) FROM kv WHERE key=?1",[JOB_JOURNAL_MARKER],|r|r.get(0)).unwrap();
-        assert_eq!((count,marker),(0,1));
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM kv WHERE key=?1",[format!("wetube_publish_{a}")],|r|r.get::<_,i64>(0)).unwrap(),0);
-    }
+    crate::wetube_journal::insert_row(&mut db().lock(),id,payload)
 }
 
 pub fn wetube_kv_read(key: &str) -> Result<Option<String>> {

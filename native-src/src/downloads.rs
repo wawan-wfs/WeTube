@@ -109,7 +109,8 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         .detach();
         return;
     }
-    if cx.default_global::<Downloads>().history_blocked { toast(cx, "Download history could not be read. New downloads are paused to protect local recovery data."); return; }
+    load_history(cx);
+    if history_blocked(cx) { toast(cx, "Download history could not be read. New downloads are paused to protect local recovery data."); return; }
     let fmt = format.unwrap_or_else(|| store::settings_snapshot().download_format.clone());
     if !FORMATS.iter().any(|(key, _)| *key == fmt.as_str()) && fmt != "single" {
         toast(cx, "Unsupported download format"); return;
@@ -169,8 +170,6 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         );
         return;
     }
-    load_history(cx);
-    if history_blocked(cx){toast(cx,"Download journal is unreadable");return;}
     let d = cx.default_global::<Downloads>();
     d.next += 1;
     let job = Job {

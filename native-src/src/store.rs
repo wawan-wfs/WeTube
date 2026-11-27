@@ -507,6 +507,8 @@ fn db() -> &'static Mutex<Connection> {
 
 pub fn init() {
     // Called after exclusive profile acquisition, before any database access.
+    // Preserve the existing behavior of isolated portable and test profiles.
+    if !cfg!(test)&&std::env::var_os("WETUBE_NATIVE_DATA_DIR").filter(|d|!d.is_empty()).is_none(){
     let d=data_dir();
     // A -wal/-shm left without its database belongs to some other copy of it;
         // SQLite would replay it onto whatever database is put there next and
@@ -520,6 +522,7 @@ pub fn init() {
                 let _ = std::fs::rename(d.join(format!("ferrotube.db{ext}")), d.join(format!("streamtube.db{ext}")));
             }
         }
+    }
     let _ = db();
     let _ = settings_snapshot();
 }

@@ -219,7 +219,7 @@ impl Render for PlaylistPage {
             .child(
                 div()
                     .w_full()
-                    .h(if compact{(compact_width*0.36).clamp(px(96.),px(220.))}else{px(176.)})
+                    .h(if compact{(compact_width*0.36).max(px(96.)).min(px(220.))}else{px(176.)})
                     .rounded_xl()
                     .overflow_hidden()
                     .bg(p.surface)

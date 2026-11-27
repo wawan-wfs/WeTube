@@ -87,7 +87,7 @@ impl Render for PipView {
                     .justify_end()
                     .visible()
                     .bg(linear_gradient(180., linear_color_stop(hsla(0., 0., 0., 0.6), 0.), linear_color_stop(hsla(0., 0., 0., 0.), 1.)))
-                    .child(div().id("pip-drag").flex_1().h_full().window_control_area(WindowControlArea::Drag))
+                    .child(div().id("pip-drag").flex_1().h_full().flex().items_center().pl_2().text_xs().text_color(white()).child("WeTube · PiP").window_control_area(WindowControlArea::Drag))
                     .child(
                         div()
                             .id("pip-close")

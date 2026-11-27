@@ -800,8 +800,9 @@ impl PlayerView {
         let is_live = pl.streams.as_ref().map(|s| s.is_live).unwrap_or(false);
         let sb_show = store::settings_snapshot().sponsorblock;
         let sb_actions = store::settings_snapshot().sb_actions.clone();
-        let frac = if duration > 0.0 { (time / duration) as f32 } else { 0.0 };
-        let cache_frac = if duration > 0.0 { (cache / duration).min(1.0) as f32 } else { 0.0 };
+        let safe_fraction=|value:f64|if duration.is_finite()&&duration>0.0&&value.is_finite(){(value/duration).clamp(0.0,1.0) as f32}else{0.0};
+        let frac=safe_fraction(time);
+        let cache_frac=safe_fraction(cache);
         let hover = self.hover_frac.filter(|_| duration > 0.0 && self.hovering);
         let accent = p.accent;
         let seek_b = self.seek_bounds.clone();
@@ -817,8 +818,9 @@ impl PlayerView {
         let mut spans: Vec<(f32, f32)> = Vec::new();
         if duration > 0.0 && !chapters.is_empty() && !store::settings_snapshot().hide_chapters {
             for (i, c) in chapters.iter().enumerate() {
-                let a = (c.start / duration).clamp(0.0, 1.0) as f32;
-                let b = chapters.get(i + 1).map(|n| (n.start / duration) as f32).unwrap_or(1.0).clamp(a, 1.0);
+                if !c.start.is_finite(){continue;}
+                let a=safe_fraction(c.start);
+                let b=chapters.get(i+1).filter(|n|n.start.is_finite()).map(|n|safe_fraction(n.start)).unwrap_or(1.0).clamp(a,1.0);
                 if b > a {
                     spans.push((a, b));
                 }

@@ -127,9 +127,11 @@ pub fn download_to(
 /// Use a fresh authorized media URL. Persist only the strong HTTP validator,
 /// representation ID and size, never the URL. Exact 206 required to append.
 pub fn download_resumable(url:&str,partial:&std::path::Path,key:&str,itag:u32,
-    progress:impl FnMut(u64,Option<u64>)->bool)->Result<()> {
-    let prior=crate::store::wetube_kv_read(key)?.filter(|s|!s.is_empty())
-        .map(|s|serde_json::from_str::<crate::wetube_resume::Validator>(&s)).transpose()?;
+    mut progress:impl FnMut(u64,Option<u64>)->bool)->Result<()> {
+    let read_checkpoint=||->Result<Option<crate::wetube_resume::Validator>> {
+        crate::store::wetube_kv_read(key)?.filter(|s|!s.is_empty())
+            .map(|s|serde_json::from_str::<crate::wetube_resume::Validator>(&s).map_err(Into::into)).transpose()
+    };
     // Long downloads use a separate agent: metadata requests retain their 30s deadline.
     let mut cfg=ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(6*3600)))
@@ -144,11 +146,34 @@ pub fn download_resumable(url:&str,partial:&std::path::Path,key:&str,itag:u32,
         if let Ok(proxy)=ureq::Proxy::new(&p){cfg=cfg.proxy(Some(proxy));}
     }
     let media:ureq::Agent=cfg.build().into();
-    transfer_resumable(&media,url,partial,itag,prior,|v| {
-        let data=match v {Some(v)=>serde_json::to_string(v)?,None=>String::new()};
-        anyhow::ensure!(crate::store::wetube_kv_set(key,&data),"Could not persist media checkpoint");
-        Ok(())
-    },progress)
+    let started=std::time::Instant::now();
+    for _ in 0..180 {
+        let prior=read_checkpoint()?;
+        let before=prior.as_ref().filter(|v|v.valid(itag)&&v.checkpoint_valid()).map(|v|v.committed).unwrap_or(0);
+        let mut cancelled=false;
+        let result=transfer_resumable(&media,url,partial,itag,prior,|v| {
+            let data=match v {Some(v)=>serde_json::to_string(v)?,None=>String::new()};
+            anyhow::ensure!(crate::store::wetube_kv_set(key,&data),"Could not persist media checkpoint");
+            Ok(())
+        },|done,total|{
+            let keep=started.elapsed()<Duration::from_secs(6*3600)&&progress(done,total);
+            cancelled=!keep;
+            keep
+        });
+        match result {
+            Ok(())=>return Ok(()),
+            Err(e)=>{
+                if cancelled || started.elapsed()>=Duration::from_secs(6*3600) {return Err(e);}
+                // Only a typed I/O timeout with a newly committed strong
+                // validator permits automatic continuation. Other errors,
+                // provider denials and unknown-length responses stop.
+                let timed_out=e.downcast_ref::<std::io::Error>().is_some_and(|e|e.kind()==std::io::ErrorKind::TimedOut);
+                let advanced=read_checkpoint()?.is_some_and(|v|v.valid(itag)&&v.checkpoint_valid()&&v.committed>before&&v.committed<v.total);
+                if !timed_out||!advanced{return Err(e);}
+            }
+        }
+    }
+    anyhow::bail!("Media transfer continuation limit reached")
 }
 
 /// Dependency-injected checkpoint store and HTTP agent allow true local HTTP tests.

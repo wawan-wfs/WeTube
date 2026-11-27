@@ -1355,8 +1355,8 @@ impl WatchPage {
                                 })),
                         ),
                 )
-                .child(div().flex().items_center().justify_between().px_3().py_2().border_b_1().border_color(p.border)
-                    .child(div().text_xs().text_color(p.text2).child("↑ ↓ reorder · × remove"))
+                .child(div().flex().flex_wrap().gap_2().items_center().justify_between().px_3().py_2().border_b_1().border_color(p.border)
+                    .child(div().text_xs().text_color(p.text2).child("↑ ↓ reorder · × remove · Save to preserve locally"))
                     .child(pill("wetube-save-queue", Some("list-video"), "Save queue", cx).on_click(move |_, _, cx| {
                         let result = { let p = save.read(cx); crate::wetube_queue::save(&p.queue, p.queue_pos) };
                         match result { Ok(()) => toast(cx, "Queue saved locally"), Err(e) => toast(cx, e.to_string()) }

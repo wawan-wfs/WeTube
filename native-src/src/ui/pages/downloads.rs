@@ -24,26 +24,33 @@ impl Render for DownloadsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = pal(cx);
         let compact=crate::wetube_workspace::compact(content_width(cx).into(),850.0,store::settings_snapshot().ui_scale);
-        let jobs = cx.default_global::<Downloads>().jobs.lock().clone();
+        let jobs_handle=cx.default_global::<Downloads>().jobs.clone();
         let dir = store::settings_snapshot().download_dir.clone();
         let ytdlp = crate::api::streams::ytdlp_path().is_some();
         let query = self.search.read(cx).value().trim().to_lowercase();
         if query!=self.last_query {self.last_query=query.clone();self.page=0;}
-        let active = jobs.iter().filter(|j| matches!(j.status, JobStatus::Queued | JobStatus::Running)).count();
-        let done = jobs.iter().filter(|j| matches!(j.status, JobStatus::Done(_))).count();
-        let failed = jobs.iter().filter(|j| matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled)).count();
         let interrupted = crate::downloads::interrupted_count(cx);
         let journal_blocked = crate::downloads::history_blocked(cx);
         let filter = self.filter;
-        let visible = jobs.iter().rev().filter(|j| {
-            let category = match &j.status { JobStatus::Queued | JobStatus::Running => 1, JobStatus::Done(_) => 2, _ => 3 };
-            (filter == 0 || filter == category) && (query.is_empty() || j.video.title.to_lowercase().contains(&query) || j.video.channel_name.to_lowercase().contains(&query))
-        });
-        let matches=visible.clone().count();
-        self.page=self.page.min(matches.saturating_sub(1)/100);
+        // Project only the visible page while holding the list lock. Release it
+        // before building widgets or calling any other download-global helper.
+        let (active,done,failed,total_jobs,matches,page_jobs)={
+            let jobs=jobs_handle.lock();
+            let (mut active,mut done,mut failed)=(0usize,0usize,0usize);
+            for j in jobs.iter(){match &j.status{JobStatus::Queued|JobStatus::Running=>active+=1,JobStatus::Done(_)=>done+=1,_=>failed+=1}}
+            let visible=jobs.iter().rev().filter(|j|{
+                let category=match &j.status{JobStatus::Queued|JobStatus::Running=>1,JobStatus::Done(_)=>2,_=>3};
+                (filter==0||filter==category)&&(query.is_empty()||j.video.title.to_lowercase().contains(&query)||j.video.channel_name.to_lowercase().contains(&query))
+            });
+            let matches=visible.clone().count();
+            let page=crate::wetube_workspace::queue_page(matches,None,Some(self.page),100);
+            self.page=page.page;
+            let page_jobs:Vec<_>=visible.skip(page.range.start).take(page.range.len()).cloned().collect();
+            (active,done,failed,jobs.len(),matches,page_jobs)
+        };
         let mut shown = 0;
         let mut list = div().flex().flex_col().gap_3();
-        for j in visible.skip(self.page*100).take(100) {
+        for j in &page_jobs {
             shown += 1;
             let id = j.id;
             let vid = j.video.id.clone();
@@ -108,10 +115,10 @@ impl Render for DownloadsPage {
             list=list.child(pages);
         }
         if shown == 0 {
-            list = list.child(empty_state("download", if jobs.is_empty() { "No downloads yet" } else { "No matching downloads" }, "", cx));
+            list = list.child(empty_state("download", if total_jobs==0 { "No downloads yet" } else { "No matching downloads" }, "", cx));
         }
         let mut filters = div().flex().flex_wrap().items_center().gap_2();
-        for (i,label,n) in [(0u8,"All",jobs.len()),(1,"Active",active),(2,"Completed",done),(3,"Failed / cancelled",failed)] {
+        for (i,label,n) in [(0u8,"All",total_jobs),(1,"Active",active),(2,"Completed",done),(3,"Failed / cancelled",failed)] {
             filters = filters.child(chip(SharedString::from(format!("dl-filter-{i}")),format!("{label} ({n})"),filter == i,cx)
                 .on_click(cx.listener(move |this, _, _, cx| { this.filter=i; this.page=0; cx.notify(); })));
         }
@@ -135,7 +142,7 @@ impl Render for DownloadsPage {
                                 div()
                                     .flex()
                                     .gap_2()
-                                    .when(jobs.iter().any(|j| !matches!(j.status, JobStatus::Running | JobStatus::Queued)), |d| {
+                                    .when(done+failed>0, |d| {
                                         d.child(pill("dl-clear", Some("list-x"), "Clear list", cx).on_click(|_,window,cx|crate::ui::app::confirm("Clear download history?", "Completed and interrupted entries and their recovery metadata are removed. Media and partial files stay on disk.", "Clear list", window,cx,|_,cx|crate::downloads::clear_history(cx))))
                                     })
                                     .child(pill("dl-change", Some("folder-cog"), "Change folder", cx).on_click(|_, _, cx| {

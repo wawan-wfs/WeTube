@@ -108,6 +108,17 @@ mod tests {
         assert_eq!(queue_page(10001,Some(9999),None,50).range,9950..10000);assert_eq!(queue_page(10001,Some(9999),Some(usize::MAX),50).range,10000..10001);
         assert_eq!(queue_page(0,None,None,50).range,0..0);assert_eq!(queue_page(51,Some(50),None,50).range,50..51);
     }
+    #[test] fn download_page_bounds_at_journal_capacity(){
+        let len=50_000;
+        let mut count=0;
+        for page in 0..500 {
+            let p=queue_page(len,None,Some(page),100);
+            assert_eq!(p.pages,500);assert_eq!(p.range.start,count);
+            assert_eq!(p.range.len(),100);count=p.range.end;
+        }
+        assert_eq!(count,len);
+        assert_eq!(queue_page(49_999,None,Some(500),100).range,49_900..49_999);
+    }
     #[test] fn resume_never_overwrites_explicit_or_accepts_invalid(){
         assert_eq!(resume_position(Some(0.0),Some((30.0,100.0)),true),Some(0.0));assert_eq!(resume_position(None,Some((30.0,100.0)),true),Some(30.0));
         assert_eq!(resume_position(None,Some((98.0,100.0)),true),None);assert_eq!(resume_position(None,Some((30.0,100.0)),false),None);

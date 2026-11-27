@@ -407,16 +407,13 @@ impl Render for HomePage {
                 }
             }
         };
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
+        page_scroll("home-scroll",&self.scroll).child(div().flex().flex_col()
             .child(div().px_6().pt_4().pb_1().child(workspace_header("Discover", "Browse videos, channels and your local subscriptions", "compass", cx)))
             .child(div().px_6().py_2().flex().flex_wrap().gap_2()
                 .child(pill("discover-refresh",Some("refresh-cw"),"Refresh feed",cx).on_click(cx.listener(|this,_,_,cx|this.load(cx))))
                 .child(pill("discover-library",Some("library"),"Library",cx).on_click(|_,window,cx|navigate(Route::Library,window,cx)))
                 .child(pill("discover-history",Some("history"),"History",cx).on_click(|_,window,cx|navigate(Route::History,window,cx))))
             .child(chips)
-            .child(page_scroll("home-scroll", &self.scroll).child(div().px_6().pt_2().pb_24().child(body)))
+            .child(div().px_6().pt_2().pb_24().child(body)))
     }
 }

@@ -2067,18 +2067,7 @@ impl AppView {
         let sel = self.sel_suggestion;
         let maximized = window.is_maximized();
         let compact=crate::wetube_workspace::compact(window.viewport_size().width.into(),1050.0,store::settings_snapshot().ui_scale);
-        div()
-            .id("topbar")
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(if compact{px(104.)}else{px(56.)})
-            .when(compact,|d|d.flex_wrap().gap_1())
-            .px_3()
-            .bg(p.bg)
-            .border_b_1()
-            .border_color(p.border)
-            .child(
+        let nav=
                 div()
                     .flex()
                     .items_center()
@@ -2111,13 +2100,8 @@ impl AppView {
                             .on_click(cx.listener(|this, _, window, cx| this.go(Route::Home, window, cx)))
                             .child(crate::ui::logo(px(28.)))
                             .child(crate::ui::wordmark(cx)),
-                    ),
-            )
-            // only the empty gaps move the window: gpui reports the first matching control
-            // area, so a drag area around the buttons would swallow their clicks
-            .when(!compact,|d|d.child(drag_gap("drag-l")))
-            .child(
-                div()
+                    );
+        let search=div()
                     .relative()
                     .flex()
                     .items_center()
@@ -2212,11 +2196,8 @@ impl AppView {
                             )
                             .with_priority(2),
                         )
-                    }),
-            )
-            .when(!compact,|d|d.child(drag_gap("drag-r")))
-            .child(
-                div()
+                    });
+        let controls=div()
                     .flex()
                     .items_center()
                     .gap_1()
@@ -2224,8 +2205,16 @@ impl AppView {
                     .child(icon_button("settings", "settings", cx).on_click(cx.listener(|this, _, window, cx| this.go(Route::Settings, window, cx))))
                     .child(self.account_button(cx))
                     .child(div().id("drag-c").w_3().h(px(56.)).window_control_area(WindowControlArea::Drag))
-                    .child(window_controls(maximized, cx)),
-            )
+                    .child(window_controls(maximized, cx));
+        let root=div().id("topbar").flex().flex_none().items_center().px_3().bg(p.bg).border_b_1().border_color(p.border)
+            .h(px(crate::wetube_workspace::toolbar_height(window.viewport_size().width.into(),store::settings_snapshot().ui_scale)));
+        if compact {
+            root.flex_col().gap_1()
+                .child(div().w_full().h(px(56.)).flex().items_center().justify_between().gap_1().child(nav).child(controls))
+                .child(search.w_full())
+        }else{
+            root.child(nav).child(drag_gap("drag-l")).child(search).child(drag_gap("drag-r")).child(controls)
+        }
     }
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {

@@ -169,6 +169,8 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         );
         return;
     }
+    load_history(cx);
+    if history_blocked(cx){toast(cx,"Download journal is unreadable");return;}
     let d = cx.default_global::<Downloads>();
     d.next += 1;
     let job = Job {
@@ -187,7 +189,7 @@ pub fn start(video: VideoItem, format: Option<String>, cx: &mut App) {
         let mut list = jobs.lock();
         list.push(job.clone());
         // Persist admission before starting any worker; never silently lose queued intent.
-        if !persist_history(&list) {
+        if !serde_json::to_string(&saved_job(&job)).ok().is_some_and(|raw|store::insert_download_row(&job.durable_id,&raw).is_ok()) {
             list.pop();
             drop(list);
             toast(cx, "Could not save download queue; download not started");
@@ -247,12 +249,7 @@ fn spawn_job(job: Job, jobs: Arc<Mutex<Vec<Job>>>) {
                 Err(_) if cancel.load(Ordering::SeqCst)=>j.status=JobStatus::Cancelled,
                 Err(e)=>j.status=JobStatus::Failed(e.to_string()),
             }
-            if persist_job(j) {
-                if matches!(j.status,JobStatus::Done(_)) {
-                    crate::wetube_publish::forget(&job.durable_id);
-                    let _=store::wetube_kv_set(&format!("wetube_resume_{}",job.durable_id),"");
-                }
-            }else{
+            if !persist_job(j) {
                 j.status=JobStatus::Failed("Could not persist terminal state; Retry reconciles any published file".into());
                 eprintln!("WeTube download journal: terminal state write failed");
             }
@@ -285,7 +282,7 @@ pub fn retry(id: u64, cx: &mut App) {
         job.status=JobStatus::Queued;
         job.progress=0.0; job.detail.clear(); job.cancel=Arc::new(AtomicBool::new(false));
         list[i]=job.clone();
-        if !persist_history(&list) { list[i]=old; anyhow::bail!("Could not persist retry"); }
+        if !persist_job(&job) { list[i]=old; anyhow::bail!("Could not persist retry"); }
         Ok(job)
     })();
     match prepared {
@@ -381,9 +378,6 @@ fn ensure_ticking(cx: &mut App) {
                     let active = d.jobs.lock().iter().any(|j| matches!(j.status, JobStatus::Queued | JobStatus::Running));
                     if !active {
                         d.ticking = false;
-                    }
-                    if !active {
-                        save_history(cx);
                     }
                     active
                 });
@@ -762,16 +756,18 @@ fn open_with_default(info: &crate::api::types::StreamInfo, start: Option<u64>) -
 }
 
 /// Removes a finished/failed job from the list (the file stays).
-pub fn remove(id: u64, cx: &mut App) {
-    cx.default_global::<Downloads>().jobs.lock().retain(|j| j.id != id || matches!(j.status, JobStatus::Running | JobStatus::Queued));
-    save_history(cx);
-    cx.refresh_windows();
-}
-
-/// Clears every finished/failed/cancelled entry.
-pub fn clear_history(cx: &mut App) {
-    cx.default_global::<Downloads>().jobs.lock().retain(|j| matches!(j.status, JobStatus::Running | JobStatus::Queued));
-    save_history(cx);
+pub fn remove(id:u64,cx:&mut App){remove_terminal(Some(id),cx);}
+/// Clears completed, failed and cancelled entries without touching media files.
+pub fn clear_history(cx:&mut App){remove_terminal(None,cx);}
+fn remove_terminal(id:Option<u64>,cx:&mut App){
+    if history_blocked(cx){toast(cx,"Download journal is unreadable");return;}
+    let jobs=cx.default_global::<Downloads>().jobs.clone();
+    let ok={
+        let mut list=jobs.lock();
+        let next:Vec<_>=list.iter().filter(|j|matches!(j.status,JobStatus::Queued|JobStatus::Running)||id.is_some_and(|id|id!=j.id)).cloned().collect();
+        if persist_history(&next){*list=next;true}else{false}
+    };
+    if !ok{toast(cx,"Could not save history change; original entries retained");}
     cx.refresh_windows();
 }
 
@@ -970,7 +966,7 @@ fn restore_status(s: &Saved) -> JobStatus {
     else { JobStatus::Failed(s.error.clone().unwrap_or_else(|| "Download failed".into())) }
 }
 fn persist_job(j:&Job)->bool {
-    serde_json::to_string(&saved_job(j)).ok().is_some_and(|raw|store::update_download_row(&j.durable_id,&raw).is_ok())
+    serde_json::to_string(&saved_job(j)).ok().is_some_and(|raw|store::update_download_row(&j.durable_id,&raw,matches!(j.status,JobStatus::Done(_))).is_ok())
 }
 fn persist_history(jobs: &[Job]) -> bool {
     let rows: anyhow::Result<Vec<_>>=jobs.iter().map(|j|Ok((j.durable_id.clone(),serde_json::to_string(&saved_job(j))?))).collect();

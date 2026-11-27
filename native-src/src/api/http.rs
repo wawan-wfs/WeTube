@@ -133,7 +133,10 @@ pub fn download_resumable(url:&str,partial:&std::path::Path,key:&str,itag:u32,
     // Long downloads use a separate agent: metadata requests retain their 30s deadline.
     let mut cfg=ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(6*3600)))
-        .timeout_recv_body(Some(Duration::from_secs(6*3600)))
+        // Bound a single body phase. Explicit Retry resumes the durable prefix.
+        // This is a total phase deadline, not a true inactivity timer.
+        .timeout_recv_body(Some(Duration::from_secs(120)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
         .timeout_connect(Some(Duration::from_secs(20)))
         .http_status_as_error(false)
         .ip_family(crate::store::ip_family()).user_agent(BROWSER_UA);

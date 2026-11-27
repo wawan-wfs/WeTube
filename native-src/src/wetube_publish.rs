@@ -108,5 +108,49 @@ mod tests {
         assert!(finish(&root,&i,&cancel).is_ok());
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    #[ignore = "child fixture invoked only by hard_kill_publication"]
+    fn publication_child_fixture(){
+        let root=std::path::PathBuf::from(std::env::var_os("WETUBE_PUBLICATION_FIXTURE").expect("fixture root"));
+        let db=rusqlite::Connection::open(root.join("fixture.db")).unwrap();
+        let raw:String=db.query_row("SELECT intent FROM publication",[],|r|r.get(0)).unwrap();
+        let i:Intent=serde_json::from_str(&raw).unwrap();
+        finish(&root,&i,&AtomicBool::new(false)).unwrap();
+        std::fs::write(root.join("published.marker"),b"ready").unwrap();
+        loop{std::thread::sleep(std::time::Duration::from_secs(1));}
+    }
+    #[test]
+    fn hard_kill_publication(){
+        let root=std::env::temp_dir().join(format!("wetube-hardkill-{:032x}",rand::random::<u128>()));
+        std::fs::create_dir(&root).unwrap();let root=std::fs::canonicalize(root).unwrap();
+        let id="b".repeat(32);let source=format!(".wetube-{id}.part");
+        let src=root.join(&source);std::fs::write(&src,b"durable media fixture").unwrap();
+        let cancel=AtomicBool::new(false);
+        let(size,digest)=fingerprint(&root,&src,&cancel).unwrap();
+        let i=Intent{version:1,job:id,target:"video.mp4".into(),source,staged:false,size,digest};
+        {
+            let db=rusqlite::Connection::open(root.join("fixture.db")).unwrap();
+            db.execute_batch("PRAGMA synchronous=FULL;CREATE TABLE publication(intent TEXT NOT NULL,status TEXT NOT NULL);").unwrap();
+            db.execute("INSERT INTO publication VALUES(?1,'running')",[serde_json::to_string(&i).unwrap()]).unwrap();
+        }
+        let mut child=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","wetube_publish::tests::publication_child_fixture","--ignored"])
+            .env("WETUBE_PUBLICATION_FIXTURE",&root).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let until=std::time::Instant::now()+std::time::Duration::from_secs(20);
+        while !root.join("published.marker").exists()&&std::time::Instant::now()<until {
+            if child.try_wait().unwrap().is_some(){break;}
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let ready=root.join("published.marker").exists();
+        let _=child.kill();let _=child.wait();
+        assert!(ready,"child never reached publication crash boundary");
+        let db=rusqlite::Connection::open(root.join("fixture.db")).unwrap();
+        let(raw,status):(String,String)=db.query_row("SELECT intent,status FROM publication",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(status,"running");
+        let recovered:Intent=serde_json::from_str(&raw).unwrap();
+        assert!(finish(&root,&recovered,&cancel).is_ok());
+        assert_eq!(std::fs::read(root.join("video.mp4")).unwrap(),b"durable media fixture");
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn rejects_paths(){for s in ["","..","a/b","a\\b","C:video"]{assert!(!name(s));}}
 }

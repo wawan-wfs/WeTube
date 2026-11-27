@@ -105,7 +105,7 @@ impl WatchPage {
                 if let Some(pos) = p.queue.iter().position(|v| v.id == id) {
                     p.queue_pos = Some(pos);
                 } else if let Some((_, _, items)) = &local_playlist {
-                    p.queue = items.clone();
+                    p.queue = crate::wetube_occurrence::Queue::from_videos(items.clone());
                     p.queue_pos = items.iter().position(|v| v.id == id);
                 } else {
                     p.queue.clear();
@@ -427,7 +427,7 @@ impl WatchPage {
                                 // playlist queue
                                 if let Some(wp) = &w.playlist {
                                     if !wp.items.is_empty() {
-                                        p.queue = wp.items.clone();
+                                        p.queue = crate::wetube_occurrence::Queue::from_videos(wp.items.clone());
                                         p.queue_pos = wp.items.iter().position(|x| x.id == full.id);
                                     }
                                 }
@@ -1274,7 +1274,7 @@ impl WatchPage {
         let (queue, pos, len, page) = {
             let r=pl.read(cx);
             let page=crate::wetube_workspace::queue_page(r.queue.len(),r.queue_pos,self.queue_page,50);
-            (r.queue[page.range.clone()].to_vec(),r.queue_pos,r.queue.len(),page)
+            (page.range.clone().map(|i|(r.queue[i].clone(),r.queue.token(i).expect("queue invariant"))).collect::<Vec<_>>(),r.queue_pos,r.queue.len(),page)
         };
         if len==0 {
             return None;
@@ -1286,13 +1286,13 @@ impl WatchPage {
             .or(self.local_playlist.as_ref().map(|l| l.1.clone()))
             .unwrap_or_else(|| "Queue".into());
         let mut list = div().id("queue-list").flex().flex_col().max_h(px(400.)).overflow_y_scroll();
-        for (offset, v) in queue.iter().enumerate() {
+        for (offset, (v, token)) in queue.iter().enumerate() {
             let i=page.range.start+offset;
             let plc = pl.clone();
             let up = pl.clone();
             let down = pl.clone();
             let remove = pl.clone();
-            let play_id=v.id.clone();let up_id=play_id.clone();let down_id=play_id.clone();let remove_id=play_id.clone();
+            let token=*token;
             list = list.child(
                 div()
                     .flex()
@@ -1302,12 +1302,12 @@ impl WatchPage {
                     .child(div().flex_1().min_w_0().child(compact_row(
                         v,
                         pos == Some(i),
-                        Some(Arc::new(move |_, cx: &mut App| plc.update(cx, |p, cx| {if crate::wetube_workspace::queue_target(&p.queue,i,&play_id,|v|v.id.as_str()){p.play_queue_index(i,cx)}}))),
+                        Some(Arc::new(move |_, cx: &mut App| plc.update(cx, |p, cx| {if let Some(index)=p.queue.index(token){p.play_queue_index(index,cx)}}))),
                         cx,
                     )))
-                    .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{i}")), None, "↑", cx).on_click(move |_, _, cx| up.update(cx, |p, cx| { if crate::wetube_workspace::queue_target(&p.queue,i,&up_id,|v|v.id.as_str()) && crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, true) { p.checkpoint_recovery(); } cx.notify(); }))))
-                    .when(i + 1 < len, |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { if crate::wetube_workspace::queue_target(&p.queue,i,&down_id,|v|v.id.as_str()) && crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, false) { p.checkpoint_recovery(); } cx.notify(); }))))
-                    .when(pos != Some(i), |d| d.child(icon_button(SharedString::from(format!("queue-remove-{i}")), "x", cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { if crate::wetube_workspace::queue_target(&p.queue,i,&remove_id,|v|v.id.as_str()) && crate::wetube_queue::remove_item(&mut p.queue, &mut p.queue_pos, i) { p.checkpoint_recovery(); } cx.notify(); })))),
+                    .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{i}")), None, "↑", cx).on_click(move |_, _, cx| up.update(cx, |p, cx| { if p.queue.move_token(&mut p.queue_pos,token,true) { p.checkpoint_recovery(); } cx.notify(); }))))
+                    .when(i + 1 < len, |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { if p.queue.move_token(&mut p.queue_pos,token,false) { p.checkpoint_recovery(); } cx.notify(); }))))
+                    .when(pos != Some(i), |d| d.child(icon_button(SharedString::from(format!("queue-remove-{i}")), "x", cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { if p.queue.remove_token(&mut p.queue_pos,token) { p.checkpoint_recovery(); } cx.notify(); })))),
             );
         }
         let plc2 = pl.clone();
@@ -1341,11 +1341,7 @@ impl WatchPage {
                                 .flex()
                                 .child(icon_button("q-shuffle", "shuffle", cx).on_click(move |_, _, cx| {
                                     plc2.update(cx, |p, cx| {
-                                        use rand::seq::SliceRandom;
-                                        let mut indexed: Vec<_> = std::mem::take(&mut p.queue).into_iter().enumerate().collect();
-                                        indexed.shuffle(&mut rand::rng());
-                                        p.queue_pos = p.queue_pos.and_then(|old| indexed.iter().position(|(i, _)| *i == old));
-                                        p.queue = indexed.into_iter().map(|(_, v)| v).collect();
+                                        p.queue.shuffle(&mut p.queue_pos);
                                         p.checkpoint_recovery();
                                         cx.notify();
                                     })
@@ -1363,7 +1359,7 @@ impl WatchPage {
                 .child(div().flex().flex_wrap().gap_2().items_center().justify_between().px_3().py_2().border_b_1().border_color(p.border)
                     .child(div().text_xs().text_color(p.text2).child("↑ ↓ reorder · × remove · Save to preserve locally"))
                     .child(pill("wetube-save-queue", Some("list-video"), "Save queue", cx).on_click(move |_, _, cx| {
-                        let result = { let p = save.read(cx); crate::wetube_queue::save(&p.queue, p.queue_pos) };
+                        let result = { let p = save.read(cx); crate::wetube_occurrence::save(&p.queue, p.queue_pos) };
                         match result { Ok(()) => toast(cx, "Queue saved locally"), Err(e) => toast(cx, e.to_string()) }
                     })))
                 .child(div().flex().flex_wrap().gap_2().p_2().bg(p.surface2)

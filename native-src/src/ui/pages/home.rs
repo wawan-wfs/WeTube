@@ -1,3 +1,4 @@
+use crate::ui::app::{navigate, Route};
 use crate::api::innertube::{self, EXPLORE};
 use crate::api::types::*;
 use crate::store;

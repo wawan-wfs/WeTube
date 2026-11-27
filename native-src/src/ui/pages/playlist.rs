@@ -186,7 +186,7 @@ impl PlaylistPage {
         }
         let first = q[idx].id.clone();
         player(cx).update(cx, |p, _| {
-            p.queue = q;
+            p.queue = crate::wetube_occurrence::Queue::from_videos(q);
             p.queue_pos = Some(idx);
         });
         let list = if shuffle { None } else { Some(self.playlist_param()) };
@@ -356,7 +356,7 @@ impl Render for PlaylistPage {
                                         let videos = page.videos.ready().cloned().unwrap_or_default();
                                         let param = page.playlist_param();
                                         player(cx).update(cx, |p, _| {
-                                            p.queue = videos;
+                                            p.queue = crate::wetube_occurrence::Queue::from_videos(videos);
                                             p.queue_pos = Some(i);
                                         });
                                         let id = vid.clone();

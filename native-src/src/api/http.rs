@@ -260,13 +260,16 @@ fn transfer_resumable(
     };
     let result=(||->Result<()> {
         anyhow::ensure!(progress(done,total),"cancelled");
-        let mut reader=resp.body_mut().with_config().limit(MAX_BYTES).reader();
-        let mut buf=vec![0u8;256*1024];
-        loop {
-            let n=reader.read(&mut buf)?;if n==0{break;}
-            let next=done.checked_add(n as u64).ok_or_else(||anyhow!("Media size overflow"))?;
+        // The consumer owns all file and journal state. A stalled reader
+        // cannot block cancellation or mutate a partial after the worker returns.
+        let pump=crate::wetube_transfer::Pump::spawn(move |tx|{
+            let mut reader=resp.body_mut().with_config().limit(MAX_BYTES).reader();
+            crate::wetube_transfer::read_to_channel(&mut reader,tx);
+        })?;
+        while let Some(buf)=pump.next(Duration::from_secs(20),||progress(done,total))? {
+            let next=done.checked_add(buf.len() as u64).ok_or_else(||anyhow!("Media size overflow"))?;
             anyhow::ensure!(next<=MAX_BYTES&&total.is_none_or(|t|next<=t),"Media response exceeds expected size");
-            file.write_all(&buf[..n])?;hash.update(&buf[..n]);done=next;
+            file.write_all(&buf)?;hash.update(&buf);done=next;
             if done-durable>=CHECKPOINT_BYTES {checkpoint(&file,&hash,done,&mut validator)?;durable=done;}
             anyhow::ensure!(progress(done,total),"cancelled");
         }

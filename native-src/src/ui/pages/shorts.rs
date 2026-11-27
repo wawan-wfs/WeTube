@@ -485,7 +485,7 @@ impl ShortsPage {
         }
     }
 
-    fn render_comments(&mut self, h: Pixels, cx: &mut Context<Self>) -> AnyElement {
+    fn render_comments(&mut self, h: Pixels, width: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let p = pal(cx);
         let ready = self.comments.as_ref().and_then(|c| c.ready());
         let count = ready.and_then(|c| c.count_text.clone());
@@ -566,7 +566,7 @@ impl ShortsPage {
         div()
             .flex()
             .flex_col()
-            .w(px(380.))
+            .w(width)
             .h(h)
             .rounded_xl()
             .overflow_hidden()
@@ -600,12 +600,8 @@ impl Render for ShortsPage {
             return div().size_full().child(if self.loading { spinner(cx).into_any_element() } else { empty_state("zap", "No Shorts found", "", cx).into_any_element() }).into_any_element();
         }
         let v = self.list[self.idx].clone();
-        // Comments occupy horizontal space; keep the video within the viewport.
-        let reserved = if self.show_comments { px(460.) } else { px(128.) };
-        let available_w = (ui.content_width - reserved).max(px(140.));
-        let header=if ui.viewport.width<px(1050.){104.}else{56.};
-        let h = (ui.viewport.height - px(header + 32.)).max(px(160.)).min(available_w * (16. / 9.));
-        let w = h * (9. / 16.);
+        let geometry=crate::wetube_workspace::shorts(ui.content_width.into(),ui.viewport.width.into(),ui.viewport.height.into(),self.show_comments,store::settings_snapshot().ui_scale);
+        let h=px(geometry.height);let w=px(geometry.width);
         let votes = self.votes.get(&v.id).cloned();
         let cid = v.channel_id.clone();
         let watch_id = v.id.clone();
@@ -622,12 +618,12 @@ impl Render for ShortsPage {
                 .child(div().flex().items_center().justify_center().size_12().rounded_full().bg(p.chip).hover(move |s| s.bg(p.hover)).child(icon(ic).size_6().text_color(p.text)))
                 .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(p.text).child(label))
         };
-        let comments_panel = if self.show_comments { self.render_comments(h, cx) } else { div().into_any_element() };
+        let comments_panel = if self.show_comments { self.render_comments(h,px(geometry.comments_width),cx) } else { div().into_any_element() };
         let can_up = self.idx > 0;
         let can_down = self.idx + 1 < self.list.len();
         div()
             .id("shorts")
-            .size_full()
+            .relative().size_full()
             .flex()
             .items_center()
             .justify_center()
@@ -725,6 +721,7 @@ impl Render for ShortsPage {
                 d.child(
                     div()
                         .relative()
+                        .when(geometry.comments_overlay,|d|d.absolute().right(px(12.)).top(px(12.)).bg(p.surface).rounded_xl())
                         .flex_none()
                         .child(canvas(move |bounds, _, _| b.set(bounds), |_, _, _, _| {}).absolute().size_full())
                         .child(comments_panel),

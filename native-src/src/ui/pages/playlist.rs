@@ -205,7 +205,7 @@ impl Render for PlaylistPage {
         let remote_info = self.info.clone();
         let saved = remote_info.as_ref().map(|i| store::is_playlist_saved(&i.id)).unwrap_or(false);
         let owner = self.owner.clone();
-        let compact = content_width(cx) < px(920.);
+        let compact=crate::wetube_workspace::compact(content_width(cx).into(),920.0,store::settings_snapshot().ui_scale);
         let compact_width=(content_width(cx)-px(24.)).max(px(200.));
         let header = div()
             .flex()
@@ -213,8 +213,8 @@ impl Render for PlaylistPage {
             .flex_none()
             .gap_4()
             .w(if compact { compact_width } else { px(360.) })
-            .p_6()
-            .rounded_2xl()
+            .when(compact,|d|d.p_3()).when(!compact,|d|d.p_6())
+            .rounded_2xl().border_1().border_color(p.border)
             .bg(linear_gradient(180., linear_color_stop(p.hover, 0.), linear_color_stop(p.bg, 1.)))
             .child(
                 div()

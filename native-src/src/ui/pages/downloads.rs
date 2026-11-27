@@ -23,7 +23,7 @@ impl DownloadsPage {
 impl Render for DownloadsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = pal(cx);
-        let compact=content_width(cx)<px(850.);
+        let compact=crate::wetube_workspace::compact(content_width(cx).into(),850.0,store::settings_snapshot().ui_scale);
         let jobs = cx.default_global::<Downloads>().jobs.lock().clone();
         let dir = store::settings_snapshot().download_dir.clone();
         let ytdlp = crate::api::streams::ytdlp_path().is_some();
@@ -164,7 +164,7 @@ impl Render for DownloadsPage {
                         if ytdlp { "yt-dlp (all qualities, SponsorBlock chapters)" } else { "built-in (combined 360p/720p or audio only — install yt-dlp for more)" }
                     )))
                     .child(div().flex().flex_col().gap_3().p_4().rounded_xl().border_1().border_color(p.border).bg(p.surface)
-                        .child(div().text_sm().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(format!("{active} active · {done} completed · {failed} failed or cancelled")))
+                        .child(div().flex().flex_wrap().gap_3().child(workspace_metric("Active",active.to_string(),cx)).child(workspace_metric("Completed",done.to_string(),cx)).child(workspace_metric("Needs attention",failed.to_string(),cx)).child(workspace_metric("Interrupted",interrupted.to_string(),cx)))
                         .child(gpui_kit::component::input::Input::new(&self.search).appearance(false).cleanable(true))
                         .child(filters)
                         .when(journal_blocked, |d| d.child(div().p_3().rounded_lg().bg(p.surface2).border_1().border_color(p.border)

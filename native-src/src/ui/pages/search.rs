@@ -172,7 +172,8 @@ impl Render for SearchPage {
         let filters = self.show_filters.then(|| {
             div()
                 .flex()
-                .gap_6()
+                .flex_wrap()
+                .gap_4()
                 .p_4()
                 .mb_4()
                 .rounded_xl()
@@ -243,7 +244,10 @@ impl Render for SearchPage {
                 .pb_24()
                 .child(div().w(width).flex().flex_col().gap_3()
                     .child(workspace_header("Search results", self.query.clone(), "search", cx))
-                    .child(header).children(filters).child(body)),
+                    .child(header)
+                    .when(!f.is_default(),|d|d.child(pill("search-reset",Some("rotate-ccw"),"Reset all filters",cx).on_click(cx.listener(|this,_,_,cx|{this.filter=SearchFilter::default();this.load(cx);}))))
+                    .child(div().text_xs().text_color(p.text2).child(format!("{} loaded results",self.items.ready().map(|v|v.len()).unwrap_or(0))))
+                    .children(filters).child(body)),
         )
     }
 }

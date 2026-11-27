@@ -251,7 +251,9 @@ impl Render for FeedPage {
             }
             col.into_any_element()
         };
-        page_scroll("feed-scroll", &self.scroll).child(div().px_6().pt_4().pb_24().flex().flex_col().gap_4().child(workspace_header("Subscriptions", "Follow your channels and browse recent uploads", "tv", cx)).child(header).child(body)).into_any_element()
+        page_scroll("feed-scroll", &self.scroll).child(div().px_6().pt_4().pb_24().flex().flex_col().gap_4().child(workspace_header("Subscriptions", "Follow your channels and browse recent uploads", "tv", cx))
+            .child(div().flex().flex_wrap().gap_3().child(workspace_metric("Local channels",store::subscriptions().len().to_string(),cx)).child(workspace_metric("Matching uploads",total_vids.to_string(),cx)).child(workspace_metric("Profiles",profiles.len().to_string(),cx)))
+            .child(div().p_3().rounded_xl().border_1().border_color(p.border).bg(p.surface).child(header)).child(body)).into_any_element()
     }
 }
 

@@ -1198,7 +1198,7 @@ impl Render for SettingsPage {
         let p = pal(cx);
         let query = self.search.read(cx).value().trim().to_lowercase();
         QUERY.with(|q| *q.borrow_mut() = query.clone());
-        let compact=content_width(cx)<px(760.);
+        let compact=crate::wetube_workspace::compact(content_width(cx).into(),760.0,store::settings_snapshot().ui_scale);
         let mut nav = div().flex().when(compact,|d|d.flex_wrap()).when(!compact,|d|d.flex_col()).gap_1().w(if compact{content_width(cx).max(px(240.))}else{px(240.)}).flex_none().child(
             div()
                 .flex()
@@ -1290,6 +1290,8 @@ impl Render for SettingsPage {
                     .flex_1().max_w(px(860.))
                     .min_w_0()
                     .child(workspace_header(title, "WeTube Desktop by WFS Project · local preferences", "settings", cx))
+                    .child(div().flex().flex_wrap().gap_2().p_3().rounded_lg().bg(p.surface2)
+                        .child(div().text_xs().text_color(p.text2).child("Keyboard: F6 search/workspace · F11 Watch fullscreen · Esc close dialog/fullscreen")))
                     .child(content),
             ),
         )

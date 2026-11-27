@@ -414,6 +414,11 @@ impl Render for LibraryPage {
         let saved: Vec<_> = store::saved_playlists().into_iter().filter(|pl| pl.title.to_lowercase().contains(&q)).collect();
         let history: Vec<_> = store::history_list(&q, 12).into_iter().map(|h| h.video).collect();
         let recovery_enabled = store::settings_snapshot().wetube_recover_playback;
+        let saved_queue=crate::wetube_queue::load();
+        let queue_summary=match &saved_queue {
+            Ok(Some((videos,selected)))=>format!("{} saved videos · selected {}: {}",videos.len(),selected+1,videos[*selected].title),
+            Ok(None)=>"No saved queue yet".into(),Err(_)=>"Saved queue cannot be read; existing data is unchanged".into(),
+        };
         let (_, hw) = grid_columns(width, 220.0);
         page_scroll("lib-scroll", &self.scroll).child(
             div()
@@ -439,6 +444,9 @@ impl Render for LibraryPage {
                         })))
                     .child(div().flex().items_center().gap_2().child(icon("search").size_4().text_color(p.text2)).child(Input::new(&self.filter).appearance(false).cleanable(true)))
                     .child(div().text_xs().text_color(p.text2).child(format!("Showing {count} of {} playlists", pls.len())))
+                    .child(div().flex().flex_col().gap_2().p_3().rounded_lg().bg(p.surface2)
+                        .child(section_title("Saved queue",cx)).child(div().text_sm().text_color(p.text2).child(queue_summary))
+                        .child(div().flex().flex_wrap().gap_2().when(saved_queue.as_ref().is_ok_and(|q|q.is_some()),|d|d.child(pill("lib-clear-queue",Some("trash-2"),"Clear saved queue",cx).on_click(|_,window,cx|crate::ui::app::confirm("Clear saved queue?","The stored queue is removed; current playback is unchanged.","Clear queue",window,cx,|_,cx|{if crate::wetube_queue::clear(){cx.refresh_windows();}else{toast(cx,"Could not clear saved queue");}}))))))
                     .child(div().flex().flex_wrap().items_center().gap_2().child(pill("wetube-restore-queue", Some("list-video"), "Play saved queue", cx).on_click(|_, window, cx| {
                         match crate::wetube_queue::load() {
                             Ok(Some((videos, selected))) => {

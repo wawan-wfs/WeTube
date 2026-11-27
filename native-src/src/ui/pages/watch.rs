@@ -54,6 +54,7 @@ pub struct WatchPage {
     /// repaints the chapters panel when playback moves into another chapter
     chapters_ticker: Option<Task<()>>,
     chapters_shown: Option<usize>,
+    queue_page: Option<usize>,
     _sub: Subscription,
 }
 
@@ -136,6 +137,7 @@ impl WatchPage {
             chat: None,
             chapters_ticker: None,
             chapters_shown: None,
+            queue_page: None,
             _sub: sub,
         };
         CHAPTERS_OPEN.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1269,11 +1271,12 @@ impl WatchPage {
     fn render_queue_panel(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let p = pal(cx);
         let pl = player(cx);
-        let (queue, pos) = {
-            let r = pl.read(cx);
-            (r.queue.clone(), r.queue_pos)
+        let (queue, pos, len, page) = {
+            let r=pl.read(cx);
+            let page=crate::wetube_workspace::queue_page(r.queue.len(),r.queue_pos,self.queue_page,50);
+            (r.queue[page.range.clone()].to_vec(),r.queue_pos,r.queue.len(),page)
         };
-        if queue.is_empty() {
+        if len==0 {
             return None;
         }
         let title = self
@@ -1283,7 +1286,8 @@ impl WatchPage {
             .or(self.local_playlist.as_ref().map(|l| l.1.clone()))
             .unwrap_or_else(|| "Queue".into());
         let mut list = div().id("queue-list").flex().flex_col().max_h(px(400.)).overflow_y_scroll();
-        for (i, v) in queue.iter().enumerate() {
+        for (offset, v) in queue.iter().enumerate() {
+            let i=page.range.start+offset;
             let plc = pl.clone();
             let up = pl.clone();
             let down = pl.clone();
@@ -1301,7 +1305,7 @@ impl WatchPage {
                         cx,
                     )))
                     .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{i}")), None, "↑", cx).on_click(move |_, _, cx| up.update(cx, |p, cx| { if crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, true) { p.checkpoint_recovery(); } cx.notify(); }))))
-                    .when(i + 1 < queue.len(), |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { if crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, false) { p.checkpoint_recovery(); } cx.notify(); }))))
+                    .when(i + 1 < len, |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { if crate::wetube_queue::move_item(&mut p.queue, &mut p.queue_pos, i, false) { p.checkpoint_recovery(); } cx.notify(); }))))
                     .when(pos != Some(i), |d| d.child(icon_button(SharedString::from(format!("queue-remove-{i}")), "x", cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { if crate::wetube_queue::remove_item(&mut p.queue, &mut p.queue_pos, i) { p.checkpoint_recovery(); } cx.notify(); })))),
             );
         }
@@ -1329,7 +1333,7 @@ impl WatchPage {
                                 .flex()
                                 .flex_col()
                                 .child(div().text_base().font_weight(FontWeight::BOLD).text_color(p.text).child(title))
-                                .child(div().text_xs().text_color(p.text2).child(format!("{} / {}", pos.map(|p| p + 1).unwrap_or(0), queue.len()))),
+                                .child(div().text_xs().text_color(p.text2).child(format!("{} / {}", pos.map(|p| p + 1).unwrap_or(0), len))),
                         )
                         .child(
                             div()
@@ -1361,6 +1365,11 @@ impl WatchPage {
                         let result = { let p = save.read(cx); crate::wetube_queue::save(&p.queue, p.queue_pos) };
                         match result { Ok(()) => toast(cx, "Queue saved locally"), Err(e) => toast(cx, e.to_string()) }
                     })))
+                .child(div().flex().flex_wrap().gap_2().p_2().bg(p.surface2)
+                    .child(div().text_xs().text_color(p.text2).child(format!("Page {} of {} · items {}–{}",page.page+1,page.pages,page.range.start+1,page.range.end)))
+                    .when(page.page>0,|d|d.child(pill("queue-prev",Some("chevron-left"),"Previous",cx).on_click(cx.listener(move |this,_,_,cx|{this.queue_page=Some(page.page-1);cx.notify();}))))
+                    .when(page.page+1<page.pages,|d|d.child(pill("queue-next",Some("chevron-right"),"Next",cx).on_click(cx.listener(move |this,_,_,cx|{this.queue_page=Some(page.page+1);cx.notify();}))))
+                    .child(pill("queue-follow",Some("play"),"Follow playing",cx).on_click(cx.listener(|this,_,_,cx|{this.queue_page=None;cx.notify();}))))
                 .child(nested_scroll("queue-wrap", list))
                 .into_any_element(),
         )
@@ -1477,15 +1486,12 @@ impl Render for WatchPage {
             return div().size_full().bg(black()).child(crate::ui::slot::player_slot(cx)).into_any_element();
         }
         let vp = ui.viewport;
-        let avail = (vp.width - px(48.)).max(px(160.));
-        let side_w = px(402.);
-        let two_col = avail > px(1120.);
-        let primary_w = if two_col { (avail - side_w - px(24.)).min(px(1280.)) } else { avail };
-        let player_h = if ui.theater {
-            (vp.width * (9. / 16.)).min((vp.height - px(56. + 120.)).max(px(90.)))
-        } else {
-            (primary_w * (9. / 16.)).min((vp.height-px(if vp.width<px(1050.){144.}else{96.})).max(px(160.)))
-        };
+        let geometry=crate::wetube_workspace::watch(vp.width.into(),vp.height.into(),ui.theater,store::settings_snapshot().ui_scale);
+        let avail=px(crate::wetube_workspace::content_width(vp.width.into(),0.0));
+        let side_w=px(geometry.side);
+        let two_col=geometry.two_columns;
+        let primary_w=px(geometry.primary);
+        let player_h=px(geometry.height);
         let info = match &self.info {
             Load::Ready(w) => Some(w.clone()),
             _ => None,

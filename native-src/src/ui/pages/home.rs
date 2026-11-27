@@ -396,7 +396,7 @@ impl Render for HomePage {
                                 .flex_col()
                                 .gap_4()
                                 .child(div().flex().items_center().gap_2().child(icon("zap").text_color(p.accent)).child(section_title("Shorts", cx)))
-                                .child(div().flex().gap_4().overflow_hidden().children(shorts.iter().take(8).filter_map(|i| i.as_video()).map(|v| shorts_card(v, px(200.), cx)))),
+                                .child(div().flex().flex_wrap().gap_4().children(shorts.iter().take(8).filter_map(|i| i.as_video()).map(|v| shorts_card(v, card_w.min(px(200.)), cx)))),
                         );
                     }
                     col = col.child(grid(cards.collect(), width));
@@ -412,7 +412,11 @@ impl Render for HomePage {
             .flex()
             .flex_col()
             .child(div().px_6().pt_4().pb_1().child(workspace_header("Discover", "Browse videos, channels and your local subscriptions", "compass", cx)))
-            .child(chips.overflow_hidden())
+            .child(div().px_6().py_2().flex().flex_wrap().gap_2()
+                .child(pill("discover-refresh",Some("refresh-cw"),"Refresh feed",cx).on_click(cx.listener(|this,_,_,cx|this.load(cx))))
+                .child(pill("discover-library",Some("library"),"Library",cx).on_click(|_,window,cx|navigate(Route::Library,window,cx)))
+                .child(pill("discover-history",Some("history"),"History",cx).on_click(|_,window,cx|navigate(Route::History,window,cx))))
+            .child(chips)
             .child(page_scroll("home-scroll", &self.scroll).child(div().px_6().pt_2().pb_24().child(body)))
     }
 }

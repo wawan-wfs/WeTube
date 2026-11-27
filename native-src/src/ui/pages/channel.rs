@@ -217,8 +217,8 @@ impl Render for ChannelPage {
                     .flex()
                     .items_center()
                     .gap_4()
-                    .py_2()
-                    .when(width<px(620.),|d|d.flex_col().items_start())
+                    .p_4().rounded_xl().border_1().border_color(p.border).bg(p.surface)
+                    .when(crate::wetube_workspace::compact(width.into(),620.0,s.ui_scale),|d|d.flex_col().items_start())
                     .child(avatar(d.info.avatar.as_deref(), if width<px(620.){px(88.)}else{px(160.)}, &d.info.name, cx))
                     .child(
                         div()
@@ -272,7 +272,7 @@ impl Render for ChannelPage {
                             .child(
                                 div()
                                     .flex()
-                                    .gap_2()
+                                    .gap_2().flex_wrap()
                                     .pt_2()
                                     .child(subscribe_button("ch-sub".into(), &d.info, subscribed, cx))
                                     .when_some(speed, |el, sp| el.child(pill("ch-speed", Some("gauge"), format!("{sp}x speed"), cx)))
@@ -313,7 +313,7 @@ impl Render for ChannelPage {
                             ),
                     ),
             );
-        let mut tabs = div().flex().items_center().gap_6().border_b_1().border_color(p.border);
+        let mut tabs = div().flex().flex_wrap().items_center().gap_3().border_b_1().border_color(p.border);
         for (i, t) in d.tabs.iter().enumerate() {
             let active = i == self.tab && self.searching.is_none();
             tabs = tabs.child(

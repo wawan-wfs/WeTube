@@ -45,21 +45,24 @@ fn feed_source() -> &'static str {
 /// The home feed from the last session, shown at once when the app starts while
 /// the new one loads. Kept for three days.
 fn cached_home() -> Option<Vec<Item>> {
-    let v: serde_json::Value = serde_json::from_str(&store::kv_get("home_cache")?).ok()?;
-    if v.get("source")?.as_str()? != feed_source() || crate::api::json::now() - v.get("at")?.as_i64()? > 3 * 24 * 3600 {
-        return None;
+    let raw=store::wetube_kv_read_bounded("home_cache",1024*1024).ok()??;
+    let v:serde_json::Value=serde_json::from_str(&raw).ok()?;
+    if v.get("source")?.as_str()? != "local" {
+        // A source class ("account"/"web") is not an account identity. Do
+        // not reuse or retain these older private recommendation snapshots.
+        let _=store::wetube_kv_set("home_cache", "");return None;
     }
-    let items: Vec<Item> = serde_json::from_value(v.get("items")?.clone()).ok()?;
+    if feed_source()!="local" {return None;}
+    let age=crate::api::json::now().checked_sub(v.get("at")?.as_i64()?)?;
+    if !(0..=3*24*3600).contains(&age){return None;}
+    let items:Vec<Item>=serde_json::from_value(v.get("items")?.clone()).ok()?;
     (!items.is_empty()).then_some(items)
 }
 
-fn save_home(items: &[Item]) {
-    let v = serde_json::json!({
-        "source": feed_source(),
-        "at": crate::api::json::now(),
-        "items": items.iter().take(60).collect::<Vec<_>>(),
-    });
-    store::kv_set("home_cache", &v.to_string());
+fn save_home(items:&[Item],source:&str) {
+    if source!="local"||feed_source()!="local" {return;}
+    let v=serde_json::json!({"source":"local","at":crate::api::json::now(),"items":items.iter().take(60).collect::<Vec<_>>()});
+    if let Ok(raw)=serde_json::to_string(&v){if raw.len()<=1024*1024 {let _=store::wetube_kv_set("home_cache",&raw);}}
 }
 
 /// The "Recently uploaded" chip (after All and the Explore categories).
@@ -154,6 +157,7 @@ impl HomePage {
         self.serial += 1;
         let serial = self.serial;
         let chip = self.chip;
+        let source=feed_source();
         // at startup, show the last feed right away instead of a spinner
         let mut from_cache = false;
         if chip == 0 && !STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -164,7 +168,7 @@ impl HomePage {
         }
         cx.spawn(async move |this, cx| {
             let res = blocking(move || -> anyhow::Result<(Vec<Item>, Option<String>)> {
-                if chip == 0 && crate::api::web::connected() {
+                if chip == 0 && source=="web" && crate::api::web::connected() {
                     // the account's home feed exactly as youtube.com builds it
                     for _ in 0..2 {
                         match crate::api::web::home() {
@@ -173,7 +177,7 @@ impl HomePage {
                         }
                     }
                 }
-                if chip == 0 && crate::api::auth::signed_in() {
+                if chip == 0 && source!="local" && crate::api::auth::signed_in() {
                     // YouTube's own recommendations for the account (a failed request is
                     // retried once before falling back, so the feed stays personal)
                     let home = crate::api::auth::home().ok().filter(|p| !p.items.is_empty()).or_else(|| {
@@ -263,11 +267,12 @@ impl HomePage {
                 if this.serial != serial {
                     return;
                 }
+                if source!=feed_source(){this.load(cx);return;}
                 crate::perf::mark("home feed fetched");
                 match res {
                     Ok((items, cont)) => {
                         if chip == 0 && !items.is_empty() {
-                            save_home(&items);
+                            save_home(&items,source);
                         }
                         // the cached feed stays if the user is already scrolling through it
                         let scrolled = this.scroll.offset().y < px(-40.);

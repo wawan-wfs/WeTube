@@ -10,6 +10,7 @@ impl Global for PipWindow {}
 
 pub struct PipView {
     view: Entity<PlayerView>,
+    focus: FocusHandle,
 }
 
 pub fn handle(cx: &App) -> Option<AnyWindowHandle> {
@@ -43,14 +44,14 @@ pub fn open(cx: &mut App) {
         window_min_size: Some(gpui_kit::size(px(256.), px(144.))),
         ..Default::default()
     };
-    let res = gpui_kit::open_window(opts, cx, |_, cx| {
+    let res = gpui_kit::open_window(opts, cx, |window, cx| {
         let pl = player(cx);
         let view = cx.new(|cx| {
             let mut v = PlayerView::new(pl, false, cx);
             v.pip = true;
             v
         });
-        cx.new(|_| PipView { view })
+        cx.new(|cx| {let focus=cx.focus_handle();window.focus(&focus,cx);PipView { view,focus }})
     });
     match res {
         Ok((h, _)) => cx.set_global(PipWindow(Some(h))),
@@ -66,9 +67,22 @@ pub fn close(window: &mut Window, cx: &mut App) {
 }
 
 impl Render for PipView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("pip")
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this,ev:&KeyDownEvent,window,cx| {
+                if !this.focus.is_focused(window)||ev.keystroke.modifiers.control||ev.keystroke.modifiers.alt||ev.keystroke.modifiers.platform{return;}
+                let key=ev.keystroke.key.as_str();
+                if key=="escape"{close(window,cx);cx.stop_propagation();return;}
+                if !matches!(key,"space"|"k"|"left"|"right"|"m"){return;}
+                if ev.is_held&&matches!(key,"space"|"k"|"m"){return;}
+                player(cx).update(cx,|p,cx|{
+                    if p.video.is_none(){return;}
+                    match key{"space"|"k"=>p.toggle_pause(),"left"=>p.seek_by(-5.0),"right"=>p.seek_by(5.0),"m"=>p.toggle_mute(),_=>{}}
+                    cx.notify();
+                });cx.stop_propagation();
+            }))
             .group("pip")
             .relative()
             .size_full()

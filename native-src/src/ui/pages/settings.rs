@@ -1292,7 +1292,7 @@ impl Render for SettingsPage {
                     .min_w_0()
                     .child(workspace_header(title, "WeTube Desktop by WFS Project · local preferences", "settings", cx))
                     .child(div().flex().flex_wrap().gap_2().p_3().rounded_lg().bg(p.surface2)
-                        .child(div().text_xs().text_color(p.text2).child("Keyboard: F6 search/workspace · F11 Watch fullscreen · Esc close dialog/fullscreen")))
+                        .child(div().text_xs().text_color(p.text2).child("Keyboard: F6 search/workspace · F11 Watch fullscreen · Esc close dialog/fullscreen · PiP: Space/K pause, arrows seek, M mute, Esc close")))
                     .child(content),
             ),
         )

@@ -24,6 +24,7 @@ pub struct FeedPage {
     scroll: ScrollHandle,
     last_updated: Option<i64>,
     shown: usize,
+    generation:u64,
 }
 
 impl FeedPage {
@@ -37,6 +38,7 @@ impl FeedPage {
             scroll: ScrollHandle::new(),
             last_updated: None,
             shown: 60,
+            generation:0,
         };
         s.load_cached();
         let stale = s.last_updated.map(|t| crate::api::json::now() - t > 30 * 60).unwrap_or(true);
@@ -57,11 +59,19 @@ impl FeedPage {
         self.last_updated = at;
     }
 
+    fn select_profile(&mut self,profile:Option<i64>,cx:&mut Context<Self>){
+        if self.profile==profile{return;}
+        self.generation=self.generation.wrapping_add(1);self.refreshing=false;self.profile=profile;
+        self.shown=60;self.scroll=ScrollHandle::new();self.load_cached();cx.notify();
+    }
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.refreshing {
             return;
         }
         self.refreshing = true;
+        self.generation=self.generation.wrapping_add(1);let generation=self.generation;
+        // A new refresh owns its progress counters; an old task cannot change them.
+        self.progress=Arc::new((AtomicUsize::new(0),AtomicUsize::new(0)));
         self.progress.0.store(0, Ordering::SeqCst);
         let filter = self.filter();
         let account = crate::api::auth::signed_in() && filter.is_none();
@@ -74,7 +84,7 @@ impl FeedPage {
                 let go = this
                     .update(cx, |t, cx| {
                         cx.notify();
-                        t.refreshing
+                        t.refreshing&&t.generation==generation
                     })
                     .unwrap_or(false);
                 if !go {
@@ -100,6 +110,7 @@ impl FeedPage {
             })
             .await;
             let _ = this.update(cx, |this, cx| {
+                if this.generation!=generation{return;}
                 this.refreshing = false;
                 this.videos = res.0;
                 this.last_updated = Some(crate::api::json::now());
@@ -144,16 +155,12 @@ impl Render for FeedPage {
         }
         let profiles = store::profiles();
         let mut bar = div().flex().items_center().gap_2().flex_wrap().child(chip("pf-all", "All channels", self.profile.is_none(), cx).on_click(cx.listener(|t, _, _, cx| {
-            t.profile = None;
-            t.load_cached();
-            cx.notify();
+            t.select_profile(None,cx);
         })));
         for pr in &profiles {
             let id = pr.id;
             bar = bar.child(chip(SharedString::from(format!("pf-{id}")), pr.name.clone(), self.profile == Some(id), cx).on_click(cx.listener(move |t, _, _, cx| {
-                t.profile = Some(id);
-                t.load_cached();
-                cx.notify();
+                t.select_profile(Some(id),cx);
             })));
         }
         bar = bar.child(div().w(px(1.)).h_6().bg(p.border).mx_2());
@@ -162,7 +169,7 @@ impl Render for FeedPage {
                 continue;
             }
             bar = bar.child(chip(SharedString::from(format!("k-{l}")), l, self.kind == k, cx).on_click(cx.listener(move |t, _, _, cx| {
-                t.kind = k;
+                t.kind = k;t.shown=60;t.scroll=ScrollHandle::new();
                 cx.notify();
             })));
         }

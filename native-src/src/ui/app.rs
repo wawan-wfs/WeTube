@@ -57,6 +57,26 @@ pub struct UiState {
     pub viewport: Size<Pixels>,
 }
 impl Global for UiState {}
+impl Global for crate::wetube_visual::Probe {}
+fn visual_probe_route(cx:&App)->Option<Route>{
+    let p=cx.try_global::<crate::wetube_visual::Probe>()?;
+    Some(match p.page.as_str(){
+        "Home"=>Route::Home,"Watch"=>Route::Watch{id:p.target.clone(),playlist:None,start:None},
+        "Shorts"=>Route::Shorts(Some(p.target.clone())),"Search"=>Route::Search(p.target.clone()),
+        "Channel"=>Route::Channel(p.target.clone()),"Subscriptions"=>Route::Subscriptions,
+        "Library"=>Route::Library,"Downloads"=>Route::Downloads,"Settings"=>Route::Settings,
+        "Playlist"=>{
+            let id=store::playlist_create("Visual probe · local playlist");
+            let video=VideoItem{id:p.target.clone(),title:"Authorized visual fixture".into(),thumbnail:innertube::default_thumb(&p.target),..Default::default()};
+            store::playlist_add(id,&video);Route::LocalPlaylist(id)
+        }
+        _=>return None,
+    })
+}
+fn visual_route_name(route:&Route)->Option<&'static str>{Some(match route{
+    Route::Home=>"Home",Route::Watch{..}=>"Watch",Route::Shorts(_)=>"Shorts",Route::Search(_)=>"Search",Route::Channel(_)=>"Channel",
+    Route::Subscriptions=>"Subscriptions",Route::Library=>"Library",Route::Playlist(_)|Route::LocalPlaylist(_)=>"Playlist",Route::Downloads=>"Downloads",Route::Settings=>"Settings",_=>return None,
+})}
 
 pub struct AppHandle(pub WeakEntity<AppView>);
 impl Global for AppHandle {}
@@ -576,7 +596,7 @@ impl AppView {
         cx.set_global(crate::ui::slot::PlayerSlot::default());
         // a YouTube link passed on the command line opens directly
         let arg_route = route_from_link(&std::env::args().nth(1).unwrap_or_default());
-        let start = arg_route.unwrap_or_else(|| match store::settings_snapshot().start_page.as_str() {
+        let start = visual_probe_route(cx).or(arg_route).unwrap_or_else(|| match store::settings_snapshot().start_page.as_str() {
             "subscriptions" => Route::Subscriptions,
             "history" => Route::History,
             _ => Route::Home,
@@ -3048,15 +3068,20 @@ impl Render for AppView {
             window.set_rem_size(px(16.0 * scale));
         }
         let vp = window.viewport_size();
+        if let (Some(probe),Some(page))=(cx.try_global::<crate::wetube_visual::Probe>(),visual_route_name(&self.route)) {
+            let _=probe.report(&store::data_dir(),page,vp.width.into(),vp.height.into(),window.scale_factor(),scale,
+                self.focus.is_focused(window),self.search.read(cx).focus_handle(cx).is_focused(window));
+        }
         let ui = *cx.global::<UiState>();
         let is_watch = matches!(self.route, Route::Watch { .. });
         let sidebar_w=crate::wetube_workspace::sidebar_width(vp.width.into(),ui.sidebar_open,is_watch,scale);
         {
             let u = cx.global_mut::<UiState>();
             u.viewport = vp;
+            u.fullscreen=window.is_fullscreen();
             u.content_width=px(crate::wetube_workspace::content_width(vp.width.into(),sidebar_w));
         }
-        let fullscreen = ui.fullscreen && is_watch;
+        let fullscreen = window.is_fullscreen() && is_watch;
         let mut root = div()
             .image_cache(self.images.clone())
             .id("app-root")

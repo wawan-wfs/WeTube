@@ -191,3 +191,18 @@ mod surface_tests {
         assert!(!queue_target(&entries,usize::MAX,"a",|x|*x));
     }
 }
+
+/// Shared guard for EndFile and eof-reached notifications; do not advance a
+/// newly loading queue item or consume the same completion twice.
+pub fn consume_completion(loading:bool,has_video:bool,ended:&mut bool)->bool{
+    if loading||!has_video||*ended{return false;}*ended=true;true
+}
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    #[test]fn completion_consumed_once_and_blocked_during_load(){
+        let mut ended=false;assert!(!consume_completion(true,true,&mut ended));assert!(!consume_completion(false,false,&mut ended));assert!(!ended);
+        assert!(consume_completion(false,true,&mut ended));assert!(!consume_completion(false,true,&mut ended));
+        ended=false;assert!(!consume_completion(true,true,&mut ended));assert!(consume_completion(false,true,&mut ended));
+    }
+}

@@ -329,11 +329,8 @@ impl Player {
                     ("duration", PropValue::Double(d)) if d.is_finite() && d >= 0.0 => self.duration = d,
                     ("pause", PropValue::Flag(b)) => self.paused = b,
                     ("eof-reached", PropValue::Flag(b)) => {
-                        if b && !self.eof {
-                            self.eof = true;
-                            self.on_ended(cx);
-                        }
-                        self.eof = b;
+                        if b {self.on_ended(cx);}
+                        else if !self.loading {self.eof=false;}
                     }
                     ("paused-for-cache", PropValue::Flag(b)) => self.buffering = b,
                     ("seeking", PropValue::Flag(b)) => self.seeking = b,
@@ -355,6 +352,9 @@ impl Player {
     }
 
     fn on_ended(&mut self, cx: &mut Context<Self>) {
+        // Both EndFile and eof-reached can signal the same completion. Ignore
+        // events while loading and consume once until playback resumes.
+        if !crate::wetube_workspace::consume_completion(self.loading,self.video.is_some(),&mut self.eof){return;}
         self.save_progress(true);
         if self.loop_video {
             self.seek_to(0.0);
@@ -475,6 +475,11 @@ impl Player {
     pub fn save_progress(&mut self, force: bool) {
         if self.loading { return; }
         self.checkpoint_recovery();
+        self.save_history_progress(force);
+    }
+
+    fn save_history_progress(&mut self,force:bool) {
+        if self.loading {return;}
         if let Some(v) = &self.video {
             if force || self.time > 0.0 {
                 store::history_progress(&v.id, self.time, self.duration);
@@ -488,7 +493,9 @@ impl Player {
     pub fn play(&mut self, video: VideoItem, start: Option<f64>, cx: &mut Context<Self>) {
         if !crate::wetube_session::valid_id(&video.id) { toast(cx, "Invalid video ID"); return; }
         let start = start.filter(|t| t.is_finite() && (0.0..=604800.0).contains(t));
-        self.save_progress(true);
+        // Queue callers may already have selected the next occurrence. Do
+        // not checkpoint the previous video using that new occurrence token.
+        self.save_history_progress(true);
         let s=store::settings_snapshot();
         let resume=crate::wetube_workspace::resume_position(start,store::history_position(&video.id),s.resume_playback);
         if let Some(prev) = &self.video {

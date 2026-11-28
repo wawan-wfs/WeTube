@@ -466,7 +466,7 @@ impl Render for LibraryPage {
                                     let video = r.queue[r.selected].clone();
                                     let id = video.id.clone();
                                     crate::player::controller::player(cx).update(cx, |p, cx| {
-                                        p.queue = crate::wetube_occurrence::Queue::from_videos(r.queue); p.queue_pos = Some(r.selected); p.play(video, Some(r.position), cx);
+                                        p.queue = r.queue; p.queue_pos = Some(r.selected); p.play(video, Some(r.position), cx);
                                     });
                                     navigate(Route::Watch { id, playlist: None, start: None }, window, cx);
                                 }

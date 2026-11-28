@@ -1,0 +1,52 @@
+name: WeTube Debian system SDK bootstrap
+# One-time provisioning, not a Windows acceptance gate or deployment.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/linux-system-bootstrap.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: wetube-debian-sdk-bootstrap
+  cancel-in-progress: false
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    container: debian:13-slim
+    timeout-minutes: 30
+    steps:
+      - name: Download authenticated Debian 13 amd64 SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          test "$VERSION_ID" = '13'
+          test "$(dpkg --print-architecture)" = amd64
+          apt-get -o APT::Update::Error-Mode=any update
+          mkdir -p /tmp/wetube-sdk/debs/partial export
+          chmod 755 /tmp/wetube-sdk/debs
+          apt-get -y --download-only --no-install-recommends \
+            -o Dir::Cache::archives=/tmp/wetube-sdk/debs install \
+            libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shm0-dev libxcb-xfixes0-dev libasound2-dev libudev-dev \
+            libgl-dev libegl-dev libvulkan-dev libdbus-1-dev libssl-dev
+          cd /tmp/wetube-sdk/debs
+          test -n "$(find . -maxdepth 1 -name '*.deb' -print -quit)"
+          sha256sum -- *.deb > SHA256SUMS
+          for file in *.deb; do printf '%s\t%s\t%s\t%s\n' "$file" "$(dpkg-deb -f "$file" Package)" "$(dpkg-deb -f "$file" Version)" "$(dpkg-deb -f "$file" Architecture)"; done > inventory.tsv
+          cp /etc/os-release os-release
+          rm -f lock
+          rmdir partial || true
+          tar -czf "$GITHUB_WORKSPACE/export/debian13-amd64-sdk.tar.gz" -- *.deb SHA256SUMS inventory.tsv os-release
+          cd "$GITHUB_WORKSPACE/export"
+          sha256sum debian13-amd64-sdk.tar.gz > debian13-amd64-sdk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wetube-debian13-amd64-sdk
+          path: export/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error

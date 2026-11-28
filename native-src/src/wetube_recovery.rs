@@ -1,6 +1,7 @@
 //! Opt-in playback recovery, independent of manually saved queues and history.
 //! Local-only, bounded, no signed URLs, tokens, credentials or automatic playback.
 use crate::api::types::VideoItem;
+use crate::wetube_occurrence::Queue;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 const KEY: &str = "wetube_playback_recovery_v1";
@@ -16,7 +17,7 @@ struct Entry { id: String, title: String, channel: String }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Snapshot { version: u8, items: Vec<Entry>, selected: usize, position: f64 }
-pub struct Recovery { pub queue: Vec<VideoItem>, pub selected: usize, pub position: f64 }
+pub struct Recovery { pub queue: Queue, pub selected: usize, pub position: f64 }
 
 fn short(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).take(160).collect()
@@ -63,24 +64,50 @@ fn decode(raw: &str) -> anyhow::Result<Snapshot> {
         && v.title == short(&v.title) && v.channel == short(&v.channel)), "Invalid recovery metadata");
     Ok(s)
 }
-pub fn save(video: &VideoItem, queue: &[VideoItem], selected: Option<usize>, t: f64) -> anyhow::Result<()> {
-    if !crate::store::settings_snapshot().wetube_recover_playback { return Ok(()); }
-    let raw = encode(&snapshot(video, queue, selected, t)?)?;
-    let mut state = STATE.lock().map_err(|_| anyhow::anyhow!("Recovery lock unavailable"))?;
-    if state.suppressed || !crate::store::settings_snapshot().wetube_recover_playback || state.last.as_deref() == Some(raw.as_str()) { return Ok(()); }
-    anyhow::ensure!(crate::store::wetube_kv_set(KEY, &raw), "Could not save playback recovery");
-    state.last = Some(raw);
-    Ok(())
+/// v2 keeps the exact queue occurrence tokens, including duplicate IDs. A
+/// standalone playback (no live occurrence) retains the legacy snapshot shape
+/// so periodic checkpoints do not manufacture a new random identity each time.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotV2 { version:u8, queue:serde_json::Value, position:f64 }
+fn encode_recovery(video:&VideoItem,queue:&Queue,selected:Option<usize>,t:f64)->anyhow::Result<String>{
+    if let Some((window,index))=queue.recovery_window(video,selected){
+        let payload=crate::wetube_occurrence::encode(&window,Some(index))?;
+        let raw=serde_json::to_string(&SnapshotV2{version:2,queue:serde_json::from_str(&payload)?,position:position(t)})?;
+        anyhow::ensure!(raw.len()<=MAX_BYTES,"Recovery snapshot too large");
+        Ok(raw)
+    }else{encode(&snapshot(video,&[],None,t)?)}
 }
-pub fn load() -> anyhow::Result<Option<Recovery>> {
-    if !crate::store::settings_snapshot().wetube_recover_playback { return Ok(None); }
-    let Some(raw) = crate::store::wetube_kv_read(KEY)?.filter(|v| !v.is_empty()) else { return Ok(None) };
-    let s = decode(&raw)?;
-    let queue = s.items.into_iter().map(|v| VideoItem {
-        thumbnail: crate::api::innertube::default_thumb(&v.id),
-        id: v.id, title: v.title, channel_name: v.channel, ..Default::default()
-    }).collect();
-    Ok(Some(Recovery { queue, selected: s.selected, position: s.position }))
+fn decode_recovery(raw:&str)->anyhow::Result<Recovery>{
+    anyhow::ensure!(raw.len()<=MAX_BYTES,"Recovery snapshot too large");
+    let value:serde_json::Value=serde_json::from_str(raw)?;
+    match value.get("version").and_then(|v|v.as_u64()){
+        Some(2)=>{
+            let s:SnapshotV2=serde_json::from_str(raw)?;
+            anyhow::ensure!(s.version==2&&s.position.is_finite()&&(0.0..=MAX_POSITION).contains(&s.position),"Invalid recovery position");
+            let (queue,selected)=crate::wetube_occurrence::decode(&serde_json::to_string(&s.queue)?)?;
+            Ok(Recovery{queue,selected,position:s.position})
+        }
+        Some(1)=>{
+            let s=decode(raw)?;
+            let videos=s.items.into_iter().map(|v|VideoItem{thumbnail:crate::api::innertube::default_thumb(&v.id),id:v.id,title:v.title,channel_name:v.channel,..Default::default()}).collect();
+            Ok(Recovery{queue:Queue::from_videos(videos),selected:s.selected,position:s.position})
+        }
+        _=>anyhow::bail!("Unsupported playback recovery version"),
+    }
+}
+pub fn save(video:&VideoItem,queue:&Queue,selected:Option<usize>,t:f64)->anyhow::Result<()> {
+    if !crate::store::settings_snapshot().wetube_recover_playback {return Ok(());}
+    let raw=encode_recovery(video,queue,selected,t)?;
+    let mut state=STATE.lock().map_err(|_|anyhow::anyhow!("Recovery lock unavailable"))?;
+    if state.suppressed||!crate::store::settings_snapshot().wetube_recover_playback||state.last.as_deref()==Some(raw.as_str()){return Ok(());}
+    anyhow::ensure!(crate::store::wetube_kv_set(KEY,&raw),"Could not save playback recovery");
+    state.last=Some(raw);Ok(())
+}
+pub fn load()->anyhow::Result<Option<Recovery>> {
+    if !crate::store::settings_snapshot().wetube_recover_playback{return Ok(None);}
+    let Some(raw)=crate::store::wetube_kv_read(KEY)?.filter(|v|!v.is_empty()) else{return Ok(None);};
+    Ok(Some(decode_recovery(&raw)?))
 }
 pub fn clear() -> bool {
     let Ok(mut state) = STATE.lock() else { return false };
@@ -118,6 +145,29 @@ mod tests {
         assert!(decode(r#"{"version":1,"items":[],"selected":0,"position":1,"token":"secret"}"#).is_err());
         let a = v("abcdefghijk"); let mut s = snapshot(&a, &[], None, 0.0).unwrap();
         s.selected = 1; assert!(decode(&encode(&s).unwrap()).is_err());
+    }
+    #[test] fn v2_preserves_active_token_and_bounded_window(){
+        let a=v("abcdefghijk");let mut q=Queue::from_videos(vec![a.clone();1000]);
+        let selected=999;let token=q.token(selected).unwrap();let neighbor=q.token(998).unwrap();
+        let raw=encode_recovery(&a,&q,Some(selected),45.7).unwrap();
+        assert_eq!(raw,encode_recovery(&a,&q,Some(selected),45.9).unwrap());
+        let r=decode_recovery(&raw).unwrap();assert_eq!(r.queue.len(),LIMIT);assert_eq!(r.selected,199);assert_eq!(r.position,45.0);
+        assert_eq!(r.queue.token(r.selected),Some(token));assert_eq!(r.queue.token(198),Some(neighbor));
+        let mut pos=Some(selected);q.shuffle(&mut pos);let r=decode_recovery(&encode_recovery(&a,&q,pos,7.0).unwrap()).unwrap();
+        assert_eq!(r.queue.token(r.selected),Some(token));
+    }
+    #[test] fn legacy_migration_and_corrupt_v2_fail_closed(){
+        let a=v("abcdefghijk");let raw=encode(&snapshot(&a,&[a.clone(),a.clone()],Some(1),10.0).unwrap()).unwrap();
+        let r=decode_recovery(&raw).unwrap();assert_eq!(r.selected,1);assert_ne!(r.queue.token(0),r.queue.token(1));
+        let v2=encode_recovery(&a,&r.queue,Some(r.selected),10.0).unwrap();
+        let restored=decode_recovery(&v2).unwrap();assert_eq!(restored.queue.token(1),r.queue.token(1));
+        let mut invalid:serde_json::Value=serde_json::from_str(&v2).unwrap();invalid["position"]=serde_json::json!(-1.0);assert!(decode_recovery(&invalid.to_string()).is_err());
+        invalid["position"]=serde_json::json!(1.0);invalid["queue"]["entries"][0]["token"]=invalid["queue"]["entries"][1]["token"].clone();assert!(decode_recovery(&invalid.to_string()).is_err());
+    }
+    #[test] fn standalone_checkpoint_does_not_churn_tokens(){
+        let a=v("abcdefghijk");let q=Queue::from_videos(vec![v("12345678901")]);
+        let raw=encode_recovery(&a,&q,Some(0),20.0).unwrap();assert_eq!(raw,encode_recovery(&a,&q,Some(0),20.9).unwrap());
+        let r=decode_recovery(&raw).unwrap();assert_eq!(r.queue.len(),1);assert_eq!(r.queue[0].id,a.id);
     }
     #[test] fn invalid_neighbors_do_not_shift_active_incorrectly() {
         let a = v("abcdefghijk"); let s = snapshot(&a, &[v("bad"), a.clone(), v("bad")], Some(1), 1.0).unwrap();

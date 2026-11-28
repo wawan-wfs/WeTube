@@ -27,6 +27,7 @@ mod wetube_journal;
 mod wetube_transfer;
 mod wetube_workspace;
 mod wetube_occurrence;
+mod wetube_visual;
 
 pub(crate) const PRODUCT_NAME: &str = "WeTube Desktop";
 pub(crate) const PRODUCT_CREDIT: &str = "by WFS Project";
@@ -76,6 +77,15 @@ fn main() {
     if matches!(std::env::args().nth(1).as_deref(), Some("--runtime-self-test" | "--runtime-video-test")) {
         std::process::exit(wetube_runtime::run_cli());
     }
+    let probe=match wetube_visual::Probe::parse(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        Ok(probe)=>probe,Err(e)=>{eprintln!("Visual probe: {e}");std::process::exit(2);}
+    };
+    if probe.is_some(){
+        let valid=std::env::var_os("WETUBE_NATIVE_DATA_DIR").map(std::path::PathBuf::from)
+            .ok_or_else(||anyhow::anyhow!("WETUBE_NATIVE_DATA_DIR must be set for visual probe"))
+            .and_then(|p|wetube_visual::Probe::validate_profile(&p));
+        if let Err(e)=valid{eprintln!("Visual probe: {e}");std::process::exit(2);}
+    }
     // Hold the profile lock until GUI shutdown; runtime CLI does not use the profile.
     let _profile = match wetube_profile::ProfileLock::acquire(&store::data_dir()) {
         Ok(lock)=>lock,
@@ -90,6 +100,7 @@ fn main() {
     }
     perf::init();
     store::init();
+    if let Some(p)=&probe {store::update_settings(|s|s.ui_scale=p.scale);}
     perf::mark("store");
     display::choose();
     perf::mark("display");
@@ -103,7 +114,7 @@ fn main() {
     gpui_kit::application()
         .with_assets(assets::Assets)
         .with_http_client(ui::UreqHttp::new())
-        .run(|cx: &mut App| {
+        .run(move |cx: &mut App| {
             perf::mark("gpui running");
             gpui_kit::init(cx);
             perf::mark("gpui_kit init");
@@ -113,8 +124,13 @@ fn main() {
             ui::apply_theme(None, cx);
             player::controller::init(cx);
             perf::mark("player init");
+            let bounds=if let Some(p)=&probe {
+                let sz=size(px(p.width as f32),px(p.height as f32));
+                WindowBounds::Windowed(Bounds::centered(None,sz,cx))
+            } else {saved_window_bounds(cx)};
+            if let Some(p)=probe.clone(){cx.set_global(p);}
             let opts = WindowOptions {
-                window_bounds: Some(saved_window_bounds(cx)),
+                window_bounds: Some(bounds),
                 titlebar: Some(TitlebarOptions { title: Some(PRODUCT_FULL_NAME.into()), appears_transparent: true, ..Default::default() }),
                 window_min_size: Some(size(px(720.), px(480.))),
                 ..Default::default()

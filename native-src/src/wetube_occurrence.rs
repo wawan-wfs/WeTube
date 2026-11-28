@@ -85,7 +85,7 @@ pub(crate) fn decode(raw:&str)->Result<(Queue,usize)>{
 }
 pub fn save(queue:&Queue,selected:Option<usize>)->Result<()>{ensure!(crate::store::wetube_kv_set(KEY,&encode(queue,selected)?),"Could not write saved queue");Ok(())}
 pub fn load()->Result<Option<(Queue,usize)>>{
-    let Some(raw)=crate::store::wetube_kv_read(KEY)?.filter(|s|!s.is_empty())else{return Ok(None);};
+    let Some(raw)=crate::store::wetube_kv_read_bounded(KEY,MAX_BYTES)?.filter(|s|!s.is_empty())else{return Ok(None);};
     ensure!(raw.len()<=MAX_BYTES,"Queue exceeds storage limit");
     let value:serde_json::Value=serde_json::from_str(&raw)?;
     match value.get("version").and_then(|v|v.as_u64()){

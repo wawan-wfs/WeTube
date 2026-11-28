@@ -20,6 +20,7 @@ pub struct ChannelPage {
     serial: u64,
     /// the channel description is shown in full
     about_open: bool,
+    catalog: crate::wetube_catalog::Catalog,
     _sub: Subscription,
 }
 
@@ -55,6 +56,7 @@ impl ChannelPage {
             searching: None,
             serial: 0,
             about_open: false,
+            catalog: Default::default(),
             _sub: sub,
         };
         s.load(cx);
@@ -92,6 +94,7 @@ impl ChannelPage {
     }
 
     fn select_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
+        self.catalog.reset();
         let Some(d) = self.data.ready() else { return };
         let Some(t) = d.tabs.get(idx).cloned() else { return };
         self.tab = idx;
@@ -123,6 +126,7 @@ impl ChannelPage {
     }
 
     fn search_channel(&mut self, q: String, cx: &mut Context<Self>) {
+        self.catalog.reset();
         self.searching = Some(q.clone());
         self.tab_items = Load::Loading;
         self.continuation = None;
@@ -340,6 +344,7 @@ impl Render for ChannelPage {
                 .child(icon("search").size_4().text_color(p.text2))
                 .child(Input::new(&self.search).appearance(false).cleanable(true)),
         );
+        tabs=tabs.child(chip("channel-display",if self.catalog.list{"List view"}else{"Grid view"},self.catalog.list,cx).on_click(cx.listener(|this,_,_,cx|{this.catalog.list^=true;cx.notify();})));
         let tab_title = d.tabs.get(self.tab).map(|t| t.title.clone()).unwrap_or_default();
         let body: AnyElement = match &self.tab_items {
             Load::Loading => spinner(cx).into_any_element(),
@@ -352,19 +357,26 @@ impl Render for ChannelPage {
                         _ => true,
                     })
                     .collect();
-                if items.is_empty() {
+                let page=self.catalog.window(items.len(),48);
+                let items=&items[page.range()];
+                let mut col=div().flex().flex_col().gap_4();
+                let content=if items.is_empty() {
                     empty_state("video-off", "This channel has no content here", "", cx).into_any_element()
                 } else if tab_title == "Shorts" && self.searching.is_none() {
                     let (_, w) = grid_columns(width, 200.0);
                     grid(items.iter().filter_map(|i| i.as_video()).map(|v| shorts_card(v, w, cx)).collect(), width).into_any_element()
                 } else {
                     let (_, w) = grid_columns(width, 280.0);
-                    let mut col = div().flex().flex_col().gap_6().child(grid(items.iter().map(|i| grid_item(i, w, tab_title == "Home" || self.searching.is_some(), cx)).collect(), width));
+                    let list=self.catalog.list;
+                    let cards:Vec<_>=items.iter().map(|i|if list{catalog_row(i,width,cx)}else{grid_item(i,w,tab_title=="Home"||self.searching.is_some(),cx)}).collect();
+                    let mut col=div().flex().flex_col().gap_6().child(if list{div().flex().flex_col().gap_4().children(cards)}else{grid(cards,width)});
                     if self.loading_more {
                         col = col.child(spinner(cx));
                     }
                     col.into_any_element()
-                }
+                };
+                col=col.child(content).child(catalog_nav("channel-catalog",page,cx,|this,n|{this.catalog.page=n;this.scroll=ScrollHandle::new();}));
+                col.into_any_element()
             }
         };
         page_scroll("ch-scroll", &self.scroll)

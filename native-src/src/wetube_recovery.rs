@@ -106,7 +106,7 @@ pub fn save(video:&VideoItem,queue:&Queue,selected:Option<usize>,t:f64)->anyhow:
 }
 pub fn load()->anyhow::Result<Option<Recovery>> {
     if !crate::store::settings_snapshot().wetube_recover_playback{return Ok(None);}
-    let Some(raw)=crate::store::wetube_kv_read(KEY)?.filter(|v|!v.is_empty()) else{return Ok(None);};
+    let Some(raw)=crate::store::wetube_kv_read_bounded(KEY,MAX_BYTES)?.filter(|v|!v.is_empty()) else{return Ok(None);};
     Ok(Some(decode_recovery(&raw)?))
 }
 pub fn clear() -> bool {
@@ -168,6 +168,41 @@ mod tests {
         let a=v("abcdefghijk");let q=Queue::from_videos(vec![v("12345678901")]);
         let raw=encode_recovery(&a,&q,Some(0),20.0).unwrap();assert_eq!(raw,encode_recovery(&a,&q,Some(0),20.9).unwrap());
         let r=decode_recovery(&raw).unwrap();assert_eq!(r.queue.len(),1);assert_eq!(r.queue[0].id,a.id);
+    }
+    // SQLite integration fixture: use production recovery encoding and legacy
+    // KV envelope, commit on disk, then terminate with an uncommitted mutation.
+    // This exercises SQLite recovery, not the full GPUI process lifecycle.
+    #[test]
+    #[ignore = "child fixture invoked by recovery_survives_hard_kill"]
+    fn recovery_child_fixture(){
+        let root=std::path::PathBuf::from(std::env::var_os("WETUBE_RECOVERY_FIXTURE").expect("fixture directory"));
+        let a=v("abcdefghijk");let q=Queue::from_videos(vec![a.clone(),v("12345678901"),a.clone()]);
+        let active=q.token(2).unwrap();let raw=encode_recovery(&a,&q,Some(2),123.8).unwrap();
+        let mut conn=rusqlite::Connection::open(root.join("profile.db")).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL);").unwrap();
+        {let tx=conn.transaction().unwrap();tx.execute("INSERT INTO kv VALUES(?1,?2)",rusqlite::params![KEY,serde_json::to_string(&raw).unwrap()]).unwrap();tx.commit().unwrap();}
+        let tx=conn.transaction().unwrap();tx.execute("UPDATE kv SET value='invalid uncommitted state' WHERE key=?1",[KEY]).unwrap();
+        std::fs::write(root.join("ready"),format!("{active:032x}")).unwrap();
+        loop{std::thread::sleep(std::time::Duration::from_secs(1));}
+    }
+    #[test]
+    fn recovery_survives_hard_kill(){
+        let root=std::env::temp_dir().join(format!("wetube-recovery-kill-{:032x}",rand::random::<u128>()));std::fs::create_dir(&root).unwrap();
+        let mut child=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","wetube_recovery::tests::recovery_child_fixture","--ignored"])
+            .env("WETUBE_RECOVERY_FIXTURE",&root).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(20);
+        while !root.join("ready").exists()&&std::time::Instant::now()<deadline{
+            if child.try_wait().unwrap().is_some(){break;}std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // Always reap the child before assertions, even on timeout.
+        let ready=std::fs::read_to_string(root.join("ready"));let _=child.kill();let _=child.wait();
+        let token=u128::from_str_radix(&ready.expect("child did not reach crash boundary"),16).unwrap();
+        let conn=rusqlite::Connection::open(root.join("profile.db")).unwrap();
+        let envelope:String=conn.query_row("SELECT value FROM kv WHERE key=?1",[KEY],|r|r.get(0)).unwrap();
+        let raw:String=serde_json::from_str(&envelope).unwrap();let recovered=decode_recovery(&raw).unwrap();
+        assert_eq!(recovered.selected,2);assert_eq!(recovered.position,123.0);assert_eq!(recovered.queue.token(recovered.selected),Some(token));
+        assert_ne!(recovered.queue.token(0),Some(token));drop(conn);std::fs::remove_dir_all(root).unwrap();
     }
     #[test] fn invalid_neighbors_do_not_shift_active_incorrectly() {
         let a = v("abcdefghijk"); let s = snapshot(&a, &[v("bad"), a.clone(), v("bad")], Some(1), 1.0).unwrap();

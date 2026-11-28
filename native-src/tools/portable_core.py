@@ -8,7 +8,7 @@ import shutil
 import tomllib
 
 MODULES = ("wetube_resume", "wetube_profile", "wetube_process", "wetube_journal",
-           "wetube_session", "wetube_queue", "wetube_recovery", "wetube_links", "wetube_publish", "wetube_transfer", "wetube_workspace", "wetube_occurrence", "wetube_visual")
+           "wetube_session", "wetube_queue", "wetube_recovery", "wetube_links", "wetube_publish", "wetube_transfer", "wetube_workspace", "wetube_occurrence", "wetube_visual", "wetube_catalog")
 DEPS = {"anyhow": "", "serde": 'features = ["derive"]', "serde_json": "",
         "rand": "", "sha2": "", "rusqlite": 'features = ["bundled"]',
         "ureq": 'features = ["json", "socks-proxy"]'}
@@ -29,6 +29,9 @@ pub mod store {
     pub fn settings_snapshot()->Settings{Settings{wetube_restore_tabs:false,wetube_recover_playback:false}}
     pub fn kv_get(key:&str)->Option<String>{KV.lock().unwrap().get(key).cloned()}
     pub fn wetube_kv_read(key:&str)->anyhow::Result<Option<String>>{Ok(kv_get(key))}
+    pub fn wetube_kv_read_bounded(key:&str,limit:usize)->anyhow::Result<Option<String>>{
+        let v=kv_get(key);anyhow::ensure!(v.as_ref().is_none_or(|s|s.len()<=limit),"Oversized fixture state");Ok(v)
+    }
     pub fn wetube_kv_set(key:&str,value:&str)->bool{KV.lock().unwrap().insert(key.into(),value.into());true}
     pub fn ip_family()->ureq::config::IpFamily{ureq::config::IpFamily::Any}
     pub fn proxy_setting()->Option<String>{None}

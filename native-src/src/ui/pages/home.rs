@@ -141,16 +141,18 @@ pub struct HomePage {
     loading_more: bool,
     scroll: ScrollHandle,
     serial: u64,
+    catalog: crate::wetube_catalog::Catalog,
 }
 
 impl HomePage {
     pub fn new(chip: usize, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut s = Self { chip, items: Load::Loading, continuation: None, loading_more: false, scroll: ScrollHandle::new(), serial: 0 };
+        let mut s = Self { chip, items: Load::Loading, continuation: None, loading_more: false, scroll: ScrollHandle::new(), serial: 0, catalog: Default::default() };
         s.load(cx);
         s
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
+        self.catalog.reset();
         self.items = Load::Loading;
         self.continuation = None;
         self.loading_more = false;
@@ -378,24 +380,27 @@ impl Render for HomePage {
             Load::Loading => spinner(cx).into_any_element(),
             Load::Error(e) => error_state(e, cx).into_any_element(),
             Load::Ready(items) => {
-                let items: Vec<Item> = items
+                let items: Vec<&Item> = items
                     .iter()
                     .filter(|i| match i {
                         Item::Video(v) => !store::is_filtered(v, &s) && !(s.hide_watched_in_feed && is_watched(&v.id, cx)),
                         _ => true,
                     })
-                    .cloned()
                     .collect();
+                let page=self.catalog.window(items.len(),48);
+                let items:Vec<_>=items.into_iter().skip(page.start).take(page.range().len()).collect();
                 if items.is_empty() {
                     empty_state("tv", "Nothing here yet", "", cx).into_any_element()
                 } else {
-                    let (videos, shorts): (Vec<Item>, Vec<Item>) =
+                    let (videos, shorts): (Vec<&Item>, Vec<&Item>) =
                         items.into_iter().partition(|i| !matches!(i, Item::Video(v) if v.is_short));
                     let mut col = div().flex().flex_col().gap_8();
-                    let cards: Vec<AnyElement> = videos.iter().map(|i| grid_item(i, card_w, true, cx)).collect();
-                    let split = cards.len().min(layout.columns * 2);
+                    let list_mode=self.catalog.list;
+                    let cards:Vec<AnyElement>=videos.iter().map(|i|if list_mode{catalog_row(i,width,cx)}else{grid_item(i,card_w,true,cx)}).collect();
+                    let split = cards.len().min(if list_mode{6}else{layout.columns * 2});
                     let mut cards = cards.into_iter();
-                    col = col.child(grid(cards.by_ref().take(split).collect(), width));
+                    let first:Vec<_>=cards.by_ref().take(split).collect();
+                    col=col.child(section_title("From this feed",cx)).child(if list_mode{div().flex().flex_col().gap_4().children(first)}else{grid(first,width)});
                     if !shorts.is_empty() && !s.hide_shorts {
                         col = col.child(
                             div()
@@ -403,10 +408,12 @@ impl Render for HomePage {
                                 .flex_col()
                                 .gap_4()
                                 .child(div().flex().items_center().gap_2().child(icon("zap").text_color(p.accent)).child(section_title("Shorts", cx)))
-                                .child(div().flex().flex_wrap().gap_4().children(shorts.iter().take(8).filter_map(|i| i.as_video()).map(|v| shorts_card(v, card_w.min(px(200.)), cx)))),
+                                .child(div().flex().flex_wrap().gap_4().children(shorts.iter().filter_map(|i| i.as_video()).map(|v| shorts_card(v, card_w.min(px(200.)), cx)))),
                         );
                     }
-                    col = col.child(grid(cards.collect(), width));
+                    let rest:Vec<_>=cards.collect();
+                    if !rest.is_empty(){col=col.child(section_title("More to discover",cx)).child(if list_mode{div().flex().flex_col().gap_4().children(rest)}else{grid(rest,width)});}
+                    col=col.child(catalog_nav("home-catalog",page,cx,|this,n|{this.catalog.page=n;this.scroll=ScrollHandle::new();}));
                     if self.loading_more {
                         col = col.child(spinner(cx));
                     }
@@ -419,6 +426,7 @@ impl Render for HomePage {
             .child(div().px_6().py_2().flex().flex_wrap().gap_2()
                 .child(pill("discover-refresh",Some("refresh-cw"),"Refresh feed",cx).on_click(cx.listener(|this,_,_,cx|this.load(cx))))
                 .child(pill("discover-library",Some("library"),"Library",cx).on_click(|_,window,cx|navigate(Route::Library,window,cx)))
+                .child(chip("home-display",if self.catalog.list{"List view"}else{"Grid view"},self.catalog.list,cx).on_click(cx.listener(|this,_,_,cx|{this.catalog.list^=true;cx.notify();})))
                 .child(pill("discover-history",Some("history"),"History",cx).on_click(|_,window,cx|navigate(Route::History,window,cx))))
             .child(chips)
             .child(div().px_6().pt_2().pb_24().child(body)))

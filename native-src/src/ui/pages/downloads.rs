@@ -10,13 +10,14 @@ pub struct DownloadsPage {
     search: Entity<gpui_kit::component::input::InputState>,
     page: usize,
     last_query: String,
+    oldest_first:bool,
 }
 
 impl DownloadsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx).placeholder("Search downloads"));
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
-        Self { scroll: ScrollHandle::new(), filter: 0, search, page:0,last_query:String::new() }
+        Self { scroll: ScrollHandle::new(), filter: 0, search, page:0,last_query:String::new(),oldest_first:false }
     }
 }
 
@@ -39,14 +40,14 @@ impl Render for DownloadsPage {
             let jobs=jobs_handle.lock();
             let (mut active,mut done,mut failed)=(0usize,0usize,0usize);
             for j in jobs.iter(){match &j.status{JobStatus::Queued|JobStatus::Running=>active+=1,JobStatus::Done(_)=>done+=1,_=>failed+=1}}
-            let visible=jobs.iter().rev().filter(|j|{
+            let visible=jobs.iter().filter(|j|{
                 let category=match &j.status{JobStatus::Queued|JobStatus::Running=>1,JobStatus::Done(_)=>2,_=>3};
                 (filter==0||filter==category)&&(query.is_empty()||j.video.title.to_lowercase().contains(&query)||j.video.channel_name.to_lowercase().contains(&query))
             });
             let matches=visible.clone().count();
             let page=crate::wetube_workspace::queue_page(matches,None,Some(self.page),100);
             self.page=page.page;
-            let page_jobs:Vec<_>=visible.skip(page.range.start).take(page.range.len()).cloned().collect();
+            let page_jobs:Vec<_>=if self.oldest_first{visible.skip(page.range.start).take(page.range.len()).cloned().collect()}else{visible.rev().skip(page.range.start).take(page.range.len()).cloned().collect()};
             (active,done,failed,jobs.len(),matches,page_jobs)
         };
         let mut shown = 0;
@@ -90,7 +91,8 @@ impl Render for DownloadsPage {
                             .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(p.text).truncate().child(j.video.title.clone()))
                             .child(div().text_xs().text_color(p.text2).child(format!("{} • format: {}", j.video.channel_name, j.format)))
                             .when(running, |d| {
-                                d.child(div().w_full().h(px(4.)).rounded_full().bg(p.hover).child(div().h_full().rounded_full().w(relative(j.progress.clamp(0.0, 1.0))).bg(p.accent)))
+                                let frac=if j.progress.is_finite(){j.progress.clamp(0.,1.)}else{0.};
+                                d.child(div().flex().items_center().gap_2().child(div().flex_1().h(px(6.)).rounded_full().bg(p.hover).child(div().h_full().rounded_full().w(relative(frac)).bg(p.accent))).child(div().text_xs().text_color(p.text2).child(format!("{:.0}%",frac*100.))))
                             })
                             .child(div().text_xs().text_color(color).truncate().child(status))
                             .when(!j.directory.is_empty(), |d| d.child(div().text_xs().text_color(p.text3).truncate().child(format!("Folder: {}",j.directory)))),
@@ -174,7 +176,7 @@ impl Render for DownloadsPage {
                     .child(div().flex().flex_col().gap_3().p_4().rounded_xl().border_1().border_color(p.border).bg(p.surface)
                         .child(div().flex().flex_wrap().gap_3().child(workspace_metric("Active",active.to_string(),cx)).child(workspace_metric("Completed",done.to_string(),cx)).child(workspace_metric("Needs attention",failed.to_string(),cx)).child(workspace_metric("Interrupted",interrupted.to_string(),cx)))
                         .child(gpui_kit::component::input::Input::new(&self.search).appearance(false).cleanable(true))
-                        .child(filters)
+                        .child(filters.child(chip("download-sort",if self.oldest_first{"Oldest first"}else{"Newest first"},self.oldest_first,cx).on_click(cx.listener(|this,_,_,cx|{this.oldest_first^=true;this.page=0;cx.notify();}))))
                         .when(journal_blocked, |d| d.child(div().p_3().rounded_lg().bg(p.surface2).border_1().border_color(p.border)
                             .text_sm().text_color(p.text).child("Saved download history could not be read. New downloads are paused; existing history has not been overwritten.")))
                         .when(interrupted > 0, |d| d.child(div().p_3().rounded_lg().bg(p.surface2).border_1().border_color(p.border)

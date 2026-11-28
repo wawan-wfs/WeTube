@@ -38,6 +38,12 @@ class VisualEvidenceTests(unittest.TestCase):
     def test_path_escape(self):self.invalid(lambda r:r['cells'][0].update(screenshot='../Home-720-100.png'))
     def test_claimed_review(self):self.invalid(lambda r:r['cells'][0].update(visual_review='PASS'))
     def test_focus_trace(self):self.invalid(lambda r:r['cells'][0].update(focus_trace=[]))
+    def test_invalid_compressed_pixels_even_with_valid_crc(self):
+        raw=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',720,720,8,0,0,0,0))+chunk(b'IDAT',b'not zlib')+chunk(b'IEND',b'')
+        self.path.write_bytes(raw);self.invalid(lambda r:r['cells'][0].update(sha256=hashlib.sha256(raw).hexdigest()))
+    def test_short_scanline_payload(self):
+        raw=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',720,720,8,0,0,0,0))+chunk(b'IDAT',zlib.compress(b'\0'*50))+chunk(b'IEND',b'')
+        self.path.write_bytes(raw);self.invalid(lambda r:r['cells'][0].update(sha256=hashlib.sha256(raw).hexdigest()))
     def test_crc_even_with_recomputed_digest(self):
         raw=self.raw[:-1]+bytes([self.raw[-1]^1]);self.path.write_bytes(raw)
         self.invalid(lambda r:r['cells'][0].update(sha256=hashlib.sha256(raw).hexdigest()))

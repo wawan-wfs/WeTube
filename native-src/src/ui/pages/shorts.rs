@@ -662,6 +662,7 @@ impl Render for ShortsPage {
                     .overflow_hidden()
                     .bg(black())
                     .child(crate::ui::slot::player_slot(cx))
+                    .child(div().absolute().top(px(12.)).left(px(12.)).rounded_full().px_3().py_1().bg(black().opacity(0.65)).text_color(white()).text_xs().child(format!("Shorts · {} / {}",self.idx+1,self.list.len())))
                     .child(
                         div()
                             .absolute()

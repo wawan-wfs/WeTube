@@ -25,6 +25,7 @@ pub struct FeedPage {
     last_updated: Option<i64>,
     shown: usize,
     generation:u64,
+    list_mode:bool,
 }
 
 impl FeedPage {
@@ -39,6 +40,7 @@ impl FeedPage {
             last_updated: None,
             shown: 60,
             generation:0,
+            list_mode:false,
         };
         s.load_cached();
         let stale = s.last_updated.map(|t| crate::api::json::now() - t > 30 * 60).unwrap_or(true);
@@ -196,6 +198,7 @@ impl Render for FeedPage {
                             cx.refresh_windows();
                         }),
                     )
+                    .child(chip("feed-display",if self.list_mode{"List view"}else{"Grid view"},self.list_mode,cx).on_click(cx.listener(|this,_,_,cx|{this.list_mode^=true;cx.notify();})))
                     .child(pill("refresh", Some("refresh-cw"), "Refresh", cx).on_click(cx.listener(|t, _, _, cx| t.refresh(cx))))
                     .child(pill("manage", Some("users"), "Manage", cx).on_click(|_, window, cx| navigate(Route::Channels, window, cx))),
             );
@@ -224,7 +227,7 @@ impl Render for FeedPage {
             // group by day buckets like YouTube
             let now = crate::api::json::now();
             let bucket = |ts: Option<i64>| -> &'static str {
-                let d = ts.map(|t| now - t).unwrap_or(i64::MAX);
+                let d = ts.map(|t| now.saturating_sub(t).max(0)).unwrap_or(i64::MAX);
                 if d < 86400 {
                     "Today"
                 } else if d < 2 * 86400 {
@@ -237,6 +240,8 @@ impl Render for FeedPage {
                     "Older"
                 }
             };
+            let list_mode=self.list_mode;
+            let grouped=|cards:Vec<AnyElement>|if list_mode{div().flex().flex_col().gap_4().children(cards)}else{grid(cards,width)};
             let mut col = div().flex().flex_col().gap_8();
             let mut cur: Option<&str> = None;
             let mut group: Vec<AnyElement> = Vec::new();
@@ -244,15 +249,15 @@ impl Render for FeedPage {
                 let b = bucket(v.published_ts);
                 if cur != Some(b) {
                     if let Some(c) = cur {
-                        col = col.child(div().flex().flex_col().gap_4().child(section_title(c, cx)).child(grid(std::mem::take(&mut group), width)));
+                        col = col.child(div().flex().flex_col().gap_4().child(section_title(c, cx)).child(grouped(std::mem::take(&mut group))));
                     }
                     cur = Some(b);
                 }
                 let v2 = (*v).clone();
-                group.push(video_card(&v2, card_w, true, cx));
+                group.push(if list_mode{video_row(&v2,(width*0.35).max(px(96.)).min(px(240.)),cx)}else{video_card(&v2,card_w,true,cx)});
             }
             if let Some(c) = cur {
-                col = col.child(div().flex().flex_col().gap_4().child(section_title(c, cx)).child(grid(group, width)));
+                col = col.child(div().flex().flex_col().gap_4().child(section_title(c, cx)).child(grouped(group)));
             }
             if self.shown < total_vids {
                 col = col.child(spinner(cx));

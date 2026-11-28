@@ -668,6 +668,15 @@ pub fn playlist_row(pl: &PlaylistItem, cx: &mut App) -> AnyElement {
         .into_any_element()
 }
 
+/// A reading-oriented catalog layout using the same production navigation/actions.
+pub fn catalog_row(item:&Item,width:Pixels,cx:&mut App)->AnyElement {
+    match item {
+        Item::Video(v)=>video_row(v,(width*0.35).max(px(96.)).min(px(240.)),cx),
+        Item::Channel(c)=>channel_row(c,cx),
+        Item::Playlist(p)=>playlist_row(p,cx),
+    }
+}
+
 /// Renders any item in a grid.
 pub fn grid_item(item: &Item, width: Pixels, show_channel: bool, cx: &mut App) -> AnyElement {
     match item {

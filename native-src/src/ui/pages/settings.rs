@@ -1216,6 +1216,10 @@ impl Render for SettingsPage {
                 .child(div().flex_1().child(Input::new(&self.search).appearance(false).cleanable(true))),
         );
         for (sec, name, ic) in SECTIONS {
+            if matches!(sec,Section::General|Section::Content|Section::Network|Section::Data) && !compact {
+                let group=match sec {Section::General=>"EXPERIENCE",Section::Content=>"CONTENT & PRIVACY",Section::Network=>"TOOLS & CONNECTIVITY",_=>"DATA & ABOUT"};
+                nav=nav.child(div().px_3().pt_3().pb_1().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(p.text3).child(group));
+            }
             let active = *sec == self.section;
             let sec = *sec;
             nav = nav.child(
@@ -1230,7 +1234,7 @@ impl Render for SettingsPage {
                     .cursor_pointer()
                     .text_sm()
                     .text_color(p.text)
-                    .when(active, |d| d.bg(p.chip).font_weight(FontWeight::SEMIBOLD))
+                    .when(active, |d| d.bg(p.chip).border_l_2().border_color(p.accent).font_weight(FontWeight::SEMIBOLD))
                     .hover(move |s| s.bg(p.hover))
                     .child(icon(ic).size_5().text_color(if active { p.accent } else { p.text }))
                     .child(name.to_string())
@@ -1293,7 +1297,7 @@ impl Render for SettingsPage {
                     .child(workspace_header(title, "WeTube Desktop by WFS Project · local preferences", "settings", cx))
                     .child(div().flex().flex_wrap().gap_2().p_3().rounded_lg().bg(p.surface2)
                         .child(div().text_xs().text_color(p.text2).child("Keyboard: F6 search/workspace · F11 Watch fullscreen · Esc close dialog/fullscreen · PiP: Space/K pause, arrows seek, M mute, Esc close")))
-                    .child(content),
+                    .child(div().p_4().rounded_xl().border_1().border_color(p.border).bg(p.surface).flex().flex_col().gap_3().child(content)),
             ),
         )
     }

@@ -202,6 +202,15 @@ pub fn workspace_header(title: impl Into<SharedString>, subtitle: impl Into<Shar
             .child(div().text_sm().text_color(p.text2).child(subtitle.into())))
 }
 
+/// Bounded catalog navigation: actual page range, never a fake total from a provider.
+pub fn catalog_nav<T: 'static>(prefix:&str,w:crate::wetube_catalog::Window,cx:&mut Context<T>,change:impl Fn(&mut T,usize)+Clone+'static)->Div {
+    let p=pal(cx);let previous=change.clone();
+    div().flex().flex_wrap().items_center().gap_2().p_3().rounded_lg().bg(p.surface2)
+        .child(div().flex_1().min_w_0().text_xs().text_color(p.text2).child(w.label()))
+        .when(w.page>0,|d|d.child(pill(SharedString::from(format!("{prefix}-prev")),Some("chevron-left"),"Previous",cx).on_click(cx.listener(move |this,_,_,cx|{previous(this,w.page-1);cx.notify();}))))
+        .when(w.page+1<w.pages,|d|d.child(pill(SharedString::from(format!("{prefix}-next")),Some("chevron-right"),"Next",cx).on_click(cx.listener(move |this,_,_,cx|{change(this,w.page+1);cx.notify();}))))
+}
+
 /// A compact status tile for a workspace, not a clickable control.
 pub fn workspace_metric(label: impl Into<SharedString>, value: impl Into<SharedString>, cx: &App) -> Div {
     let p=pal(cx);

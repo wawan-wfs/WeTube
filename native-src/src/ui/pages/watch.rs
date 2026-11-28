@@ -1297,7 +1297,7 @@ impl WatchPage {
                 div()
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap_1().p_1().rounded_lg().when(pos==Some(i),|d|d.bg(p.accent.opacity(0.10)))
                     .child(div().w_5().text_xs().text_color(p.text2).text_center().child(if pos == Some(i) { "▶".to_string() } else { (i + 1).to_string() }))
                     .child(div().flex_1().min_w_0().child(compact_row(
                         v,
@@ -1356,6 +1356,7 @@ impl WatchPage {
                                 })),
                         ),
                 )
+                .child(div().h(px(4.)).w_full().bg(p.hover).child(div().h_full().bg(p.accent).w(relative(pos.map(|i|(i+1).min(len) as f32 / len as f32).unwrap_or(0.)))))
                 .child(div().flex().flex_wrap().gap_2().items_center().justify_between().px_3().py_2().border_b_1().border_color(p.border)
                     .child(div().text_xs().text_color(p.text2).child("↑ ↓ reorder · × remove · Save to preserve locally"))
                     .child(pill("wetube-save-queue", Some("list-video"), "Save queue", cx).on_click(move |_, _, cx| {

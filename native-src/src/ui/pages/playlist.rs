@@ -29,6 +29,7 @@ pub struct PlaylistPage {
     filter: Option<Entity<gpui_kit::component::input::InputState>>,
     /// 0 playlist order, 1 title, 2 longest, 3 shortest, 4 channel
     sort: u8,
+    catalog:crate::wetube_catalog::Catalog,
 }
 
 impl PlaylistPage {
@@ -85,25 +86,20 @@ impl PlaylistPage {
     }
 
     /// Videos after the search filter and sort, with their index in the playlist.
-    fn visible(&self, cx: &App) -> Vec<(usize, VideoItem)> {
-        let q = self.filter.as_ref().map(|f| f.read(cx).value().trim().to_lowercase()).unwrap_or_default();
-        let mut v: Vec<(usize, VideoItem)> = self
-            .videos
-            .ready()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .filter(|(_, v)| q.is_empty() || v.title.to_lowercase().contains(&q) || v.channel_name.to_lowercase().contains(&q))
-            .collect();
+    fn visible(&self, cx: &App) -> Vec<usize> {
+        let q=self.filter.as_ref().map(|f|f.read(cx).value().trim().to_lowercase()).unwrap_or_default();
+        let Some(videos)=self.videos.ready()else{return Vec::new();};
+        let mut indices:Vec<usize>=videos.iter().enumerate()
+            .filter(|(_,v)|q.is_empty()||v.title.to_lowercase().contains(&q)||v.channel_name.to_lowercase().contains(&q))
+            .map(|(i,_)|i).collect();
         match self.sort {
-            1 => v.sort_by(|a, b| a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase())),
-            2 => v.sort_by(|a, b| b.1.duration_secs.unwrap_or(0).cmp(&a.1.duration_secs.unwrap_or(0))),
-            3 => v.sort_by(|a, b| a.1.duration_secs.unwrap_or(u64::MAX).cmp(&b.1.duration_secs.unwrap_or(u64::MAX))),
-            4 => v.sort_by(|a, b| a.1.channel_name.to_lowercase().cmp(&b.1.channel_name.to_lowercase())),
-            _ => {}
+            1=>indices.sort_by_cached_key(|&i|videos[i].title.to_lowercase()),
+            2=>indices.sort_by_key(|&i|std::cmp::Reverse(videos[i].duration_secs.unwrap_or(0))),
+            3=>indices.sort_by_key(|&i|videos[i].duration_secs.unwrap_or(u64::MAX)),
+            4=>indices.sort_by_cached_key(|&i|videos[i].channel_name.to_lowercase()),
+            _=>{}
         }
-        v
+        indices
     }
 
     fn base(source: Source) -> Self {
@@ -122,6 +118,7 @@ impl PlaylistPage {
             authed: false,
             filter: None,
             sort: 0,
+            catalog:Default::default(),
         }
     }
 
@@ -199,7 +196,7 @@ impl Render for PlaylistPage {
         let p = pal(cx);
         let has_more = self.continuation.is_some();
         maybe_load_more(&self.scroll, &mut self.loading_more, has_more, cx, |this, cx| this.load_more(cx));
-        let videos = self.videos.ready().cloned().unwrap_or_default();
+        let videos = self.videos.ready().map(Vec::as_slice).unwrap_or(&[]);
         let thumb = videos.first().map(|v| v.thumbnail.clone());
         let local_id = if let Source::Local(id) = self.source { Some(id) } else { None };
         let remote_info = self.info.clone();
@@ -307,7 +304,10 @@ impl Render for PlaylistPage {
             Load::Error(e) => error_state(e, cx).into_any_element(),
             Load::Ready(v) if v.is_empty() => empty_state("list-video", "No videos in this playlist yet", "", cx).into_any_element(),
             Load::Ready(_) => {
-                let shown = self.visible(cx);
+                let query=self.filter.as_ref().map(|f|f.read(cx).value().trim().to_lowercase()).unwrap_or_default();
+                self.catalog.context(&query);
+                let shown=self.visible(cx);
+                let page=self.catalog.window(shown.len(),60);
                 let sort = self.sort;
                 let mut bar = div().flex().flex_wrap().items_center().gap_2().pb_3().mb_1().border_b_1().border_color(p.border)
                     .child(div().text_xs().text_color(p.text2).child(format!("{} matching videos", shown.len())));
@@ -328,7 +328,7 @@ impl Render for PlaylistPage {
                 }
                 for (k, label) in [(0u8, "Default"), (1, "Title"), (2, "Longest"), (3, "Shortest"), (4, "Channel")] {
                     bar = bar.child(chip(SharedString::from(format!("pl-sort-{k}")), label, sort == k, cx).on_click(cx.listener(move |this, _, _, cx| {
-                        this.sort = k;
+                        this.sort = k;this.catalog.reset();
                         cx.notify();
                     })));
                 }
@@ -336,8 +336,9 @@ impl Render for PlaylistPage {
                 if shown.is_empty() {
                     col = col.child(div().py_8().text_sm().text_color(p.text2).child("No videos match"));
                 }
-                let vs = &shown;
-                for (i, v) in vs.iter().map(|(i, v)| (*i, v)) {
+                // Only clone visible metadata; indices still refer to the actual playlist order.
+                let visible:Vec<_>=shown[page.range()].iter().filter_map(|&i|self.videos.ready()?.get(i).map(|v|(i,v.clone()))).collect();
+                for (i, v) in visible.iter().map(|(i,v)|(*i,v)) {
                     let vid = v.id.clone();
                     let row = div()
                         .flex()
@@ -354,6 +355,7 @@ impl Render for PlaylistPage {
                                         let page = e.read(cx);
                                         // play from this index keeping the playlist as queue
                                         let videos = page.videos.ready().cloned().unwrap_or_default();
+                                        if !videos.get(i).is_some_and(|v|v.id==vid){toast(cx,"Playlist changed; select the video again");return;}
                                         let param = page.playlist_param();
                                         player(cx).update(cx, |p, _| {
                                             p.queue = crate::wetube_occurrence::Queue::from_videos(videos);
@@ -391,6 +393,7 @@ impl Render for PlaylistPage {
                         });
                     col = col.child(row);
                 }
+                col=col.child(catalog_nav("playlist-catalog",page,cx,|this,n|{this.catalog.page=n;this.scroll=ScrollHandle::new();}));
                 if self.loading_more {
                     col = col.child(spinner(cx));
                 }

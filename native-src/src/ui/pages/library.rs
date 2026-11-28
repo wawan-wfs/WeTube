@@ -326,13 +326,14 @@ pub struct LibraryPage {
     filter: Entity<InputState>,
     /// the signed-in account's YouTube playlists
     yt: Option<Load<Vec<crate::api::types::PlaylistItem>>>,
+    catalog:crate::wetube_catalog::Catalog,
 }
 
 impl LibraryPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search library and history"));
         cx.observe(&filter, |_, _, cx| cx.notify()).detach();
-        let mut s = Self { scroll: ScrollHandle::new(), filter, yt: None };
+        let mut s = Self { scroll: ScrollHandle::new(), filter, yt: None, catalog:Default::default() };
         if crate::api::auth::signed_in() {
             s.yt = Some(Load::Loading);
             cx.spawn(async move |this, cx| {
@@ -360,9 +361,11 @@ impl Render for LibraryPage {
         let pls = store::playlists();
         let q = self.filter.read(cx).value().trim().to_lowercase();
         let count = pls.iter().filter(|pl| pl.name.to_lowercase().contains(&q)).count();
-        let total_videos: usize = pls.iter().map(|pl| pl.count as usize).sum();
+        let total_videos:usize=pls.iter().map(|pl|pl.count as usize).sum();
+        self.catalog.context(&q);
+        let local_page=self.catalog.window(count,48);
         let mut cards: Vec<AnyElement> = pls
-            .iter().filter(|pl| pl.name.to_lowercase().contains(&q))
+            .iter().filter(|pl| pl.name.to_lowercase().contains(&q)).skip(local_page.start).take(local_page.range().len())
             .map(|pl| {
                 let id = pl.id;
                 div()
@@ -413,7 +416,7 @@ impl Render for LibraryPage {
                 .into_any_element(),
         );
         let saved: Vec<_> = store::saved_playlists().into_iter().filter(|pl| pl.title.to_lowercase().contains(&q)).collect();
-        let history: Vec<_> = store::history_list(&q, 12).into_iter().map(|h| h.video).collect();
+        let history:Vec<_>=store::history_page(&q,None,12).map(|(rows,_)|rows.into_iter().map(|h|h.video).collect()).unwrap_or_default();
         let recovery_enabled = store::settings_snapshot().wetube_recover_playback;
         let saved_queue=crate::wetube_occurrence::load();
         let queue_summary=match &saved_queue {
@@ -444,7 +447,7 @@ impl Render for LibraryPage {
                             prompt_text("New playlist", "Playlist name", window, cx, |name, _, cx| { store::playlist_create(&name); cx.refresh_windows(); });
                         })))
                     .child(div().flex().items_center().gap_2().child(icon("search").size_4().text_color(p.text2)).child(Input::new(&self.filter).appearance(false).cleanable(true)))
-                    .child(div().text_xs().text_color(p.text2).child(format!("Showing {count} of {} playlists", pls.len())))
+                    .child(div().text_xs().text_color(p.text2).child(format!("{count} matching · {} local playlists", pls.len())))
                     .child(div().flex().flex_col().gap_2().p_3().rounded_lg().bg(p.surface2)
                         .child(section_title("Saved queue",cx)).child(div().text_sm().text_color(p.text2).child(queue_summary))
                         .child(div().flex().flex_wrap().gap_2().when(saved_queue.as_ref().is_ok_and(|q|q.is_some()),|d|d.child(pill("lib-clear-queue",Some("trash-2"),"Clear saved queue",cx).on_click(|_,window,cx|crate::ui::app::confirm("Clear saved queue?","The stored queue is removed; current playback is unchanged.","Clear queue",window,cx,|_,cx|{if crate::wetube_occurrence::clear(){cx.refresh_windows();}else{toast(cx,"Could not clear saved queue");}}))))))
@@ -499,7 +502,7 @@ impl Render for LibraryPage {
                 }), |d, body| {
                     d.child(div().flex().flex_col().gap_4().child(section_title("Your YouTube playlists", cx)).child(body))
                 })
-                .child(div().flex().flex_col().gap_4().child(section_title("On this computer", cx)).child(grid(cards, width)))
+                .child(div().flex().flex_col().gap_4().child(section_title("On this computer",cx)).child(grid(cards,width)).child(catalog_nav("library-local",local_page,cx,|this,n|{this.catalog.page=n;})))
                 .when(!saved.is_empty(), |d| {
                     d.child(
                         div()

@@ -21,7 +21,8 @@ def require(ok, reason):
 
 def png_dimensions(raw):
     require(raw[:8] == b'\x89PNG\r\n\x1a\n', 'Not PNG')
-    offset, dims, idat, ended = 8, None, False, False
+    offset, dims, channels, ended = 8, None, None, False
+    idat = bytearray()
     while offset + 12 <= len(raw):
         size, kind = struct.unpack_from('>I4s', raw, offset)
         require(size <= len(raw)-offset-12, 'Truncated PNG chunk')
@@ -30,16 +31,30 @@ def png_dimensions(raw):
         require(zlib.crc32(kind+chunk) == crc, 'PNG CRC mismatch')
         if offset == 8:
             require(kind == b'IHDR' and size == 13, 'Missing IHDR')
-            dims = struct.unpack_from('>II', chunk)
-            require(0 < dims[0] <= 16384 and 0 < dims[1] <= 16384, 'Invalid dimensions')
+            width,height,depth,color,compression,filter_method,interlace=struct.unpack('>IIBBBBB',chunk)
+            dims=(width,height)
+            require(0 < width <= 16384 and 0 < height <= 16384, 'Invalid dimensions')
+            channels={0:1,2:3,3:1,4:2,6:4}.get(color)
+            require(depth==8 and channels and compression==filter_method==interlace==0,'Unsupported screenshot PNG format')
+            require(height*(width*channels+1)<=256*1024*1024,'Decoded PNG exceeds budget')
+        elif kind == b'IHDR':
+            raise ValueError('Duplicate IHDR')
         if kind == b'IDAT':
-            idat = True
+            idat.extend(chunk)
         offset += 12+size
         if kind == b'IEND':
             require(size == 0 and offset == len(raw), 'Invalid IEND')
             ended = True
             break
     require(dims and idat and ended, 'Incomplete PNG')
+    stride=dims[0]*channels+1;expected=stride*dims[1]
+    try:
+        decoder=zlib.decompressobj()
+        decoded=decoder.decompress(bytes(idat),expected+1)
+    except zlib.error as e:
+        raise ValueError('Invalid PNG compressed scanlines') from e
+    require(decoder.eof and not decoder.unused_data and not decoder.unconsumed_tail and len(decoded)==expected,'PNG scanline length mismatch')
+    require(all(decoded[i]<=4 for i in range(0,expected,stride)),'Invalid PNG scanline filter')
     return dims
 
 

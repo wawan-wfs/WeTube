@@ -14,6 +14,7 @@ pub struct SearchPage {
     loading_more: bool,
     scroll: ScrollHandle,
     serial: u64,
+    catalog: crate::wetube_catalog::Catalog,
 }
 
 impl SearchPage {
@@ -27,12 +28,14 @@ impl SearchPage {
             loading_more: false,
             scroll: ScrollHandle::new(),
             serial: 0,
+            catalog: Default::default(),
         };
         s.load(cx);
         s
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
+        self.catalog.reset();
         self.items = Load::Loading;
         self.continuation = None;
         self.loading_more = false;
@@ -204,7 +207,9 @@ impl Render for SearchPage {
             Load::Ready(items) => {
                 let mut col = div().flex().flex_col().gap_4();
                 let mut shorts = Vec::new();
-                for it in items {
+                let filtered:Vec<_>=items.iter().filter(|it|match it{Item::Video(v)=>!store::is_filtered(v,&s)&&(!s.hide_shorts||!v.is_short),_=>true}).collect();
+                let page=self.catalog.window(filtered.len(),40);
+                for it in &filtered[page.range()] {
                     match it {
                         Item::Video(v) if store::is_filtered(v, &s) => {}
                         Item::Video(v) if v.is_short => shorts.push(v.clone()),
@@ -224,12 +229,13 @@ impl Render for SearchPage {
                             .border_b_1()
                             .border_color(p.border)
                             .child(div().flex().items_center().gap_2().child(icon("zap").text_color(p.accent)).child(section_title("Shorts", cx)))
-                            .child(div().flex().flex_wrap().gap_3().children(shorts.iter().take(6).map(|v| shorts_card(v, if width<px(540.){px(130.)}else{px(190.)}, cx)))),
+                            .child(div().flex().flex_wrap().gap_3().children(shorts.iter().map(|v| shorts_card(v, if width<px(540.){px(130.)}else{px(190.)}, cx)))),
                     );
                 }
-                if items.is_empty() {
+                if filtered.is_empty() {
                     col = col.child(empty_state("search-x", "No results found", "Try different keywords or remove filters", cx));
                 }
+                col=col.child(catalog_nav("search-catalog",page,cx,|this,n|{this.catalog.page=n;this.scroll=ScrollHandle::new();}));
                 if self.loading_more {
                     col = col.child(spinner(cx));
                 }
@@ -245,7 +251,7 @@ impl Render for SearchPage {
                 .pb_24()
                 .child(div().w(width).flex().flex_col().gap_3()
                     .child(workspace_header("Search results", self.query.clone(), "search", cx))
-                    .child(header)
+                    .child(div().p_3().rounded_xl().bg(p.surface).border_1().border_color(p.border).child(header))
                     .when(!f.is_default(),|d|d.child(pill("search-reset",Some("rotate-ccw"),"Reset all filters",cx).on_click(cx.listener(|this,_,_,cx|{this.filter=SearchFilter::default();this.load(cx);}))))
                     .child(div().text_xs().text_color(p.text2).child(format!("{} loaded results",self.items.ready().map(|v|v.len()).unwrap_or(0))))
                     .children(filters).child(body)),

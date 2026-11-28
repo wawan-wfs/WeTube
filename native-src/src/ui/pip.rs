@@ -72,9 +72,11 @@ impl Render for PipView {
             .id("pip")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this,ev:&KeyDownEvent,window,cx| {
-                if !this.focus.is_focused(window)||ev.keystroke.modifiers.control||ev.keystroke.modifiers.alt||ev.keystroke.modifiers.platform{return;}
+                if ev.keystroke.modifiers.control||ev.keystroke.modifiers.alt||ev.keystroke.modifiers.platform{return;}
                 let key=ev.keystroke.key.as_str();
+                // Escape works even when a child playback control owns focus.
                 if key=="escape"{close(window,cx);cx.stop_propagation();return;}
+                if !this.focus.is_focused(window){return;}
                 if !matches!(key,"space"|"k"|"left"|"right"|"m"){return;}
                 if ev.is_held&&matches!(key,"space"|"k"|"m"){return;}
                 player(cx).update(cx,|p,cx|{
@@ -105,6 +107,7 @@ impl Render for PipView {
                     .child(
                         div()
                             .id("pip-close")
+                            .tab_index(0).aria_label("Close picture in picture").border_2().border_color(hsla(0.,0.,0.,0.)).focus_visible(|s|s.border_color(white()))
                             .flex()
                             .items_center()
                             .justify_center()

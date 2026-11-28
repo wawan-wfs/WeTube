@@ -1776,14 +1776,14 @@ impl AppView {
 
     // ───── keyboard ─────
 
-    fn on_key_up(&mut self, ev: &KeyUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_up(&mut self, ev: &KeyUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         if ev.keystroke.key != "space" || !std::mem::take(&mut self.space_down) {
             return;
         }
         player(cx).update(cx, |pl, cx| {
             if pl.boost.is_some() {
                 pl.end_boost();
-            } else {
+            } else if self.focus.is_focused(window) && self.dialog.is_none() {
                 pl.toggle_pause();
             }
             cx.notify();
@@ -1846,6 +1846,7 @@ impl AppView {
         if k == "escape" {
             if self.dialog.is_some() {
                 self.dialog = None;
+                window.focus(&self.focus,cx);
                 cx.notify();
                 return;
             }

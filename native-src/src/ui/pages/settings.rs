@@ -1225,6 +1225,7 @@ impl Render for SettingsPage {
             nav = nav.child(
                 div()
                     .id(SharedString::from(format!("sec-{name}")))
+                    .tab_index(0).aria_label(name.to_string()).focus_visible(move|s|s.border_2().border_color(p.accent))
                     .flex()
                     .items_center()
                     .gap_3()

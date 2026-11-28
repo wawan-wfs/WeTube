@@ -43,6 +43,7 @@ const MPV_FORMAT_FLAG: c_int = 3;
 const MPV_FORMAT_DOUBLE: c_int = 5;
 
 const EV_SHUTDOWN: c_int = 1;
+const EV_COMMAND_REPLY: c_int = 5;
 const EV_END_FILE: c_int = 7;
 const EV_FILE_LOADED: c_int = 8;
 const EV_PROPERTY_CHANGE: c_int = 22;
@@ -220,6 +221,7 @@ pub fn diagnostic() -> String {
 pub enum MpvEvent {
     FileLoaded,
     PlaybackRestart,
+    CommandReply { id:u64, error:Option<String> },
     EndFile { eof: bool, error: Option<String> },
     Prop(&'static str, PropValue),
     Frame,
@@ -358,6 +360,7 @@ impl Mpv {
                             ev_cb(MpvEvent::Shutdown);
                             break;
                         }
+                        EV_COMMAND_REPLY if e.reply_userdata!=0 => ev_cb(MpvEvent::CommandReply{id:e.reply_userdata,error:(e.error<0).then(||err_str(e.error))}),
                         EV_FILE_LOADED => ev_cb(MpvEvent::FileLoaded),
                         EV_PLAYBACK_RESTART => ev_cb(MpvEvent::PlaybackRestart),
                         EV_END_FILE => {
@@ -491,18 +494,19 @@ impl Mpv {
         self.render.frame.lock().take()
     }
 
-    pub fn command(&self, args: &[&str]) -> Result<()> {
+    pub fn command(&self,args:&[&str])->Result<()> {self.command_tagged(args,0)}
+    pub fn command_tagged(&self, args: &[&str], id:u64) -> Result<()> {
         let (_, f) = lib()?;
-        let cs: Vec<CString> = args.iter().map(|a| CString::new(*a).unwrap_or_default()).collect();
+        let cs: Vec<CString> = args.iter().map(|a| CString::new(*a)).collect::<std::result::Result<_,_>>()?;
         let mut ptrs: Vec<*const c_char> = cs.iter().map(|c| c.as_ptr()).collect();
         ptrs.push(std::ptr::null());
-        let rc = unsafe { (f.command_async)(self.h.0, 0, ptrs.as_mut_ptr()) };
+        let rc = unsafe { (f.command_async)(self.h.0, id, ptrs.as_mut_ptr()) };
         if rc < 0 { Err(anyhow!("mpv command {:?}: {}", args.first(), err_str(rc))) } else { Ok(()) }
     }
 
     pub fn command_sync(&self, args: &[&str]) -> Result<()> {
         let (_, f) = lib()?;
-        let cs: Vec<CString> = args.iter().map(|a| CString::new(*a).unwrap_or_default()).collect();
+        let cs: Vec<CString> = args.iter().map(|a| CString::new(*a)).collect::<std::result::Result<_,_>>()?;
         let mut ptrs: Vec<*const c_char> = cs.iter().map(|c| c.as_ptr()).collect();
         ptrs.push(std::ptr::null());
         let rc = unsafe { (f.command)(self.h.0, ptrs.as_mut_ptr()) };

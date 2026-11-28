@@ -610,6 +610,7 @@ impl Render for ShortsPage {
             let p = pal(cx);
             div()
                 .id(id)
+                .tab_index(0).aria_label(label.clone()).focus_visible(move|s|s.border_2().border_color(p.accent))
                 .flex()
                 .flex_col()
                 .items_center()

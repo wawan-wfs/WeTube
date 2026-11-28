@@ -29,6 +29,8 @@ mod wetube_workspace;
 mod wetube_occurrence;
 mod wetube_visual;
 mod wetube_catalog;
+mod wetube_library;
+mod wetube_commands;
 
 pub(crate) const PRODUCT_NAME: &str = "WeTube Desktop";
 pub(crate) const PRODUCT_CREDIT: &str = "by WFS Project";

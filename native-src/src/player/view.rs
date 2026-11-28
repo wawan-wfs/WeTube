@@ -971,6 +971,13 @@ impl PlayerView {
         let ctl_btn = |id: &'static str, name: &str| {
             div()
                 .id(id)
+                .tab_index(0).aria_label(match id {
+                    "c-play"=>if paused{"Play"}else{"Pause"},"c-next"=>"Next video",
+                    "c-mute"=>if muted{"Unmute"}else{"Mute"},"c-cc"=>"Captions",
+                    "c-shot"=>"Capture video frame","c-settings"=>"Playback settings",
+                    "c-mini"=>"Miniplayer","c-pip"=>"Picture in picture","c-theater"=>"Theater mode",
+                    "c-fs"=>if ui.fullscreen{"Exit fullscreen"}else{"Fullscreen"},_=>name,
+                }.to_string()).border_2().border_color(hsla(0.,0.,0.,0.)).focus_visible(|s|s.border_color(white()))
                 .flex()
                 .flex_none()
                 .items_center()

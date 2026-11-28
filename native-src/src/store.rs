@@ -374,6 +374,7 @@ const LIBRARY_INDEXES: &str = "CREATE INDEX IF NOT EXISTS wetube_history_recent 
     CREATE INDEX IF NOT EXISTS wetube_history_cursor ON history(watched_at DESC, video_id DESC);
     CREATE INDEX IF NOT EXISTS wetube_playlist_order ON playlist_items(playlist_id, position, video_id);
     CREATE INDEX IF NOT EXISTS wetube_saved_recent ON saved_playlists(added_at DESC, playlist_id);
+    CREATE INDEX IF NOT EXISTS wetube_local_playlist_order ON playlists(protected DESC,created_at,id);
     CREATE INDEX IF NOT EXISTS wetube_search_recent ON search_history(at DESC, query);";
 
 const TABLES: &str = "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -941,14 +942,9 @@ pub fn search_history_clear() {
 
 // ───────────────────────── local playlists ─────────────────────────
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct LocalPlaylist {
-    pub id: i64,
-    pub name: String,
-    pub protected: bool,
-    pub count: usize,
-    pub thumbnail: Option<String>,
-}
+pub use crate::wetube_library::LocalPlaylist;
+pub fn local_playlist_page(query:&str,page:usize,size:usize)->Result<crate::wetube_library::LocalPage>{crate::wetube_library::local_page(&db().lock(),query,page,size)}
+pub fn saved_playlist_page(query:&str,page:usize,size:usize)->Result<(crate::wetube_catalog::Window,Vec<crate::api::types::PlaylistItem>)>{crate::wetube_library::saved_page(&db().lock(),query,page,size)}
 
 pub fn playlists() -> Vec<LocalPlaylist> {
     let conn = db().lock();

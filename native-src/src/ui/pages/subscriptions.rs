@@ -23,7 +23,7 @@ pub struct FeedPage {
     progress: Arc<(AtomicUsize, AtomicUsize)>,
     scroll: ScrollHandle,
     last_updated: Option<i64>,
-    shown: usize,
+    catalog:crate::wetube_catalog::Catalog,
     generation:u64,
     list_mode:bool,
 }
@@ -38,7 +38,7 @@ impl FeedPage {
             progress: Arc::new((AtomicUsize::new(0), AtomicUsize::new(0))),
             scroll: ScrollHandle::new(),
             last_updated: None,
-            shown: 60,
+            catalog:Default::default(),
             generation:0,
             list_mode:false,
         };
@@ -64,7 +64,7 @@ impl FeedPage {
     fn select_profile(&mut self,profile:Option<i64>,cx:&mut Context<Self>){
         if self.profile==profile{return;}
         self.generation=self.generation.wrapping_add(1);self.refreshing=false;self.profile=profile;
-        self.shown=60;self.scroll=ScrollHandle::new();self.load_cached();cx.notify();
+        self.catalog.reset();self.scroll=ScrollHandle::new();self.load_cached();cx.notify();
     }
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.refreshing {
@@ -131,9 +131,6 @@ impl Render for FeedPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = pal(cx);
         let s = store::settings_snapshot();
-        if near_bottom(&self.scroll, 800.0) && self.shown < self.videos.len() {
-            self.shown += 60;
-        }
         let layout=workspace_surface(crate::wetube_workspace::Workspace::Subscriptions,cx);
         let width=px(layout.width);
         let (_, card_w) = grid_columns(width,layout.card_min);
@@ -171,7 +168,7 @@ impl Render for FeedPage {
                 continue;
             }
             bar = bar.child(chip(SharedString::from(format!("k-{l}")), l, self.kind == k, cx).on_click(cx.listener(move |t, _, _, cx| {
-                t.kind = k;t.shown=60;t.scroll=ScrollHandle::new();
+                t.kind = k;t.catalog.reset();t.scroll=ScrollHandle::new();
                 cx.notify();
             })));
         }
@@ -216,13 +213,15 @@ impl Render for FeedPage {
             })
             .collect();
         let total_vids = vids.len();
+        let page=self.catalog.window(total_vids,60);
+        let visible=&vids[page.range()];
         let body: AnyElement = if vids.is_empty() && self.refreshing {
             spinner(cx).into_any_element()
         } else if vids.is_empty() {
             empty_state("inbox", "No videos", "", cx).into_any_element()
         } else if kind == Kind::Shorts {
             let (_, w) = grid_columns(width, 200.0);
-            grid(vids.iter().take(self.shown).map(|v| shorts_card(v, w, cx)).collect(), width).into_any_element()
+            grid(visible.iter().map(|v| shorts_card(v, w, cx)).collect(), width).into_any_element()
         } else {
             // group by day buckets like YouTube
             let now = crate::api::json::now();
@@ -245,7 +244,7 @@ impl Render for FeedPage {
             let mut col = div().flex().flex_col().gap_8();
             let mut cur: Option<&str> = None;
             let mut group: Vec<AnyElement> = Vec::new();
-            for v in vids.iter().take(self.shown) {
+            for v in visible {
                 let b = bucket(v.published_ts);
                 if cur != Some(b) {
                     if let Some(c) = cur {
@@ -259,14 +258,11 @@ impl Render for FeedPage {
             if let Some(c) = cur {
                 col = col.child(div().flex().flex_col().gap_4().child(section_title(c, cx)).child(grouped(group)));
             }
-            if self.shown < total_vids {
-                col = col.child(spinner(cx));
-            }
             col.into_any_element()
         };
         page_scroll("feed-scroll", &self.scroll).child(div().px_6().pt_4().pb_24().flex().flex_col().gap_4().child(workspace_header("Subscriptions", "Follow your channels and browse recent uploads", "tv", cx))
             .child(div().flex().flex_wrap().gap_3().child(workspace_metric("Local channels",store::subscriptions().len().to_string(),cx)).child(workspace_metric("Matching uploads",total_vids.to_string(),cx)).child(workspace_metric("Profiles",profiles.len().to_string(),cx)))
-            .child(div().p_3().rounded_xl().border_1().border_color(p.border).bg(p.surface).child(header)).child(body)).into_any_element()
+            .child(div().p_3().rounded_xl().border_1().border_color(p.border).bg(p.surface).child(header)).child(body).child(catalog_nav("feed-catalog",page,cx,|this,n|{this.catalog.page=n;this.scroll=ScrollHandle::new();}))).into_any_element()
     }
 }
 

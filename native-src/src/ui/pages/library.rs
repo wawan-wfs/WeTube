@@ -327,13 +327,15 @@ pub struct LibraryPage {
     /// the signed-in account's YouTube playlists
     yt: Option<Load<Vec<crate::api::types::PlaylistItem>>>,
     catalog:crate::wetube_catalog::Catalog,
+    saved_catalog:crate::wetube_catalog::Catalog,
+    account_catalog:crate::wetube_catalog::Catalog,
 }
 
 impl LibraryPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search library and history"));
         cx.observe(&filter, |_, _, cx| cx.notify()).detach();
-        let mut s = Self { scroll: ScrollHandle::new(), filter, yt: None, catalog:Default::default() };
+        let mut s = Self { scroll: ScrollHandle::new(), filter, yt: None, catalog:Default::default(), saved_catalog:Default::default(),account_catalog:Default::default() };
         if crate::api::auth::signed_in() {
             s.yt = Some(Load::Loading);
             cx.spawn(async move |this, cx| {
@@ -358,14 +360,13 @@ impl Render for LibraryPage {
         let layout=workspace_surface(crate::wetube_workspace::Workspace::Library,cx);
         let width=px(layout.width);
         let (_, w) = grid_columns(width,layout.card_min);
-        let pls = store::playlists();
         let q = self.filter.read(cx).value().trim().to_lowercase();
-        let count = pls.iter().filter(|pl| pl.name.to_lowercase().contains(&q)).count();
-        let total_videos:usize=pls.iter().map(|pl|pl.count as usize).sum();
-        self.catalog.context(&q);
-        let local_page=self.catalog.window(count,48);
-        let mut cards: Vec<AnyElement> = pls
-            .iter().filter(|pl| pl.name.to_lowercase().contains(&q)).skip(local_page.start).take(local_page.range().len())
+        self.catalog.context(&q);self.saved_catalog.context(&q);self.account_catalog.context(&q);
+        let local=store::local_playlist_page(&q,self.catalog.page,48);
+        let local_error=local.is_err();
+        let (local_page,pls,playlist_count,total_videos)=match local{Ok(p)=>(p.window,p.rows,p.playlists,p.entries),Err(_)=>(crate::wetube_catalog::Window::new(0,0,48),Vec::new(),0,0)};
+        self.catalog.page=local_page.page;let count=local_page.total;
+        let mut cards: Vec<AnyElement> = pls.iter()
             .map(|pl| {
                 let id = pl.id;
                 div()
@@ -415,7 +416,13 @@ impl Render for LibraryPage {
                 })
                 .into_any_element(),
         );
-        let saved: Vec<_> = store::saved_playlists().into_iter().filter(|pl| pl.title.to_lowercase().contains(&q)).collect();
+        let saved_result=store::saved_playlist_page(&q,self.saved_catalog.page,48);
+        let saved_error=saved_result.is_err();let(saved_page,saved)=saved_result.unwrap_or_else(|_|(crate::wetube_catalog::Window::new(0,0,48),Vec::new()));
+        self.saved_catalog.page=saved_page.page;
+        let account_items=if crate::api::auth::signed_in(){self.yt.as_ref().and_then(Load::ready)}else{None};
+        let mut account_collect=crate::wetube_catalog::PageCollector::new(self.account_catalog.page,48);
+        if let Some(items)=account_items{for pl in items.iter().filter(|pl|pl.title.to_lowercase().contains(&q)){account_collect.push(pl);}}
+        let(account_page,account_items)=account_collect.finish();self.account_catalog.page=account_page.page;
         let history:Vec<_>=store::history_page(&q,None,12).map(|(rows,_)|rows.into_iter().map(|h|h.video).collect()).unwrap_or_default();
         let recovery_enabled = store::settings_snapshot().wetube_recover_playback;
         let saved_queue=crate::wetube_occurrence::load();
@@ -436,7 +443,7 @@ impl Render for LibraryPage {
                     .child(workspace_header("Your library", "Playlists, saved videos and playback recovery", "library", cx))
                     .child(div().flex().flex_wrap().gap_3()
                         .child(div().flex_1().min_w(px(132.)).p_3().rounded_lg().bg(p.surface2)
-                            .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(pls.len().to_string()))
+                            .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(playlist_count.to_string()))
                             .child(div().text_xs().text_color(p.text2).child("Local playlists")))
                         .child(div().flex_1().min_w(px(132.)).p_3().rounded_lg().bg(p.surface2)
                             .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(total_videos.to_string()))
@@ -447,7 +454,7 @@ impl Render for LibraryPage {
                             prompt_text("New playlist", "Playlist name", window, cx, |name, _, cx| { store::playlist_create(&name); cx.refresh_windows(); });
                         })))
                     .child(div().flex().items_center().gap_2().child(icon("search").size_4().text_color(p.text2)).child(Input::new(&self.filter).appearance(false).cleanable(true)))
-                    .child(div().text_xs().text_color(p.text2).child(format!("{count} matching · {} local playlists", pls.len())))
+                    .child(div().text_xs().text_color(p.text2).child(format!("{count} matching · {playlist_count} local playlists")))
                     .child(div().flex().flex_col().gap_2().p_3().rounded_lg().bg(p.surface2)
                         .child(section_title("Saved queue",cx)).child(div().text_sm().text_color(p.text2).child(queue_summary))
                         .child(div().flex().flex_wrap().gap_2().when(saved_queue.as_ref().is_ok_and(|q|q.is_some()),|d|d.child(pill("lib-clear-queue",Some("trash-2"),"Clear saved queue",cx).on_click(|_,window,cx|crate::ui::app::confirm("Clear saved queue?","The stored queue is removed; current playback is unchanged.","Clear queue",window,cx,|_,cx|{if crate::wetube_occurrence::clear(){cx.refresh_windows();}else{toast(cx,"Could not clear saved queue");}}))))))
@@ -491,16 +498,17 @@ impl Render for LibraryPage {
                                     .child(section_title("History", cx))
                                     .child(pill("lib-hist", None, "View all", cx).on_click(|_, window, cx| navigate(Route::History, window, cx))),
                             )
-                            .child(div().flex().gap_4().overflow_hidden().children(history.iter().take(6).map(|v| video_card(v, hw, true, cx)))),
+                            .child(div().flex().flex_wrap().gap_4().children(history.iter().take(6).map(|v| video_card(v, hw, true, cx)))),
                     )
                 })
-                .when_some(self.yt.as_ref().map(|l| match l {
+                .when(local_error||saved_error,|d|d.child(error_state("Could not read the local collection. Stored data was not modified.",cx)))
+                .when_some(self.yt.as_ref().filter(|_|crate::api::auth::signed_in()).map(|l| match l {
                     Load::Loading => spinner(cx).into_any_element(),
                     Load::Error(e) => div().text_sm().text_color(p.text2).child(format!("Could not load your YouTube playlists: {e}")).into_any_element(),
                     Load::Ready(l) if l.is_empty() => div().text_sm().text_color(p.text2).child("No playlists on your account yet").into_any_element(),
-                    Load::Ready(l) => grid(l.iter().filter(|pl| pl.title.to_lowercase().contains(&q)).map(|pl| playlist_card(pl, w, cx)).collect(), width).into_any_element(),
+                    Load::Ready(_) => grid(account_items.iter().map(|pl| playlist_card(pl, w, cx)).collect(), width).into_any_element(),
                 }), |d, body| {
-                    d.child(div().flex().flex_col().gap_4().child(section_title("Your YouTube playlists", cx)).child(body))
+                    d.child(div().flex().flex_col().gap_4().child(section_title("Your YouTube playlists", cx)).child(body).child(catalog_nav("library-account",account_page,cx,|this,n|{this.account_catalog.page=n;})))
                 })
                 .child(div().flex().flex_col().gap_4().child(section_title("On this computer",cx)).child(grid(cards,width)).child(catalog_nav("library-local",local_page,cx,|this,n|{this.catalog.page=n;})))
                 .when(!saved.is_empty(), |d| {
@@ -510,7 +518,7 @@ impl Render for LibraryPage {
                             .flex_col()
                             .gap_4()
                             .child(section_title("Saved playlists", cx))
-                            .child(grid(saved.iter().map(|pl| playlist_card(pl, w, cx)).collect(), width)),
+                            .child(grid(saved.iter().map(|pl| playlist_card(pl, w, cx)).collect(), width)).child(catalog_nav("library-saved",saved_page,cx,|this,n|{this.saved_catalog.page=n;})),
                     )
                 }),
         )

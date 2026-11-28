@@ -56,6 +56,7 @@ pub struct Player {
     ambient_tick: u32,
     pub loop_video: bool,
     load_serial: u64,
+    commands: crate::wetube_commands::Commands,
     last_progress_save: f64,
     pub storyboard: Option<Storyboard>,
     last_prop_notify: std::time::Instant,
@@ -141,6 +142,7 @@ impl Player {
             ambient_tick: 0,
             loop_video: s.loop_video,
             load_serial: 0,
+            commands: Default::default(),
             last_progress_save: 0.0,
             storyboard: None,
             last_prop_notify: std::time::Instant::now(),
@@ -294,8 +296,21 @@ impl Player {
                 cx.notify();
             }
             MpvEvent::PlaybackRestart => {
-                self.seeking = false;
+                let seeking=std::mem::take(&mut self.seeking);
+                if seeking&&!self.loading{self.checkpoint_recovery();}
                 cx.notify();
+            }
+            MpvEvent::CommandReply{id,error}=>{
+                use crate::wetube_commands::Kind;
+                if let Some(kind)=self.commands.resolve(id){
+                    if let Some(e)=error{
+                        match kind{
+                            Kind::Load=>{self.loading=false;self.buffering=false;self.seeking=false;self.error=Some(format!("Media command failed: {e}"));},
+                            Kind::Seek=>{self.seeking=false;toast(cx,format!("Seek failed: {e}"));},
+                        }
+                    }
+                    cx.notify();
+                }
             }
             MpvEvent::EndFile { eof, error } => {
                 if let Some(e) = error {
@@ -501,12 +516,11 @@ impl Player {
         if let Some(prev) = &self.video {
             crate::api::web::report_stop(&prev.id, self.time);
         }
-        let Some(mpv) = self.ensure_mpv(cx) else {
-            self.video = Some(video);
-            cx.notify();
-            return;
-        };
-        self.load_serial += 1;
+        self.commands.clear();
+        self.load_serial=self.load_serial.wrapping_add(1);
+        self.end_boost();
+        self.buffering=false;self.seeking=false;self.cache_time=0.0;
+        let mpv = self.ensure_mpv(cx);
         self.fallback_tried = false;
         let serial = self.load_serial;
         self.video = Some(video.clone());
@@ -532,6 +546,11 @@ impl Player {
         if let Some(old) = self.frame.take() {
             cx.drop_image(old, None);
         }
+        let Some(mpv)=mpv else {
+            self.loading=false;self.paused=true;
+            self.error=self.init_error.clone().or_else(||Some("Native media runtime unavailable".into()));
+            cx.notify();return;
+        };
         let _ = mpv.command(&["stop"]);
         store::history_add(&video);
         // with the browser sign-in, the video goes into the account's YouTube history
@@ -704,16 +723,17 @@ impl Player {
             opts.push("pause=no".into());
         }
         if let Some(v) = &self.video {
-            opts.push(format!("force-media-title={}", v.title.replace(',', " ")));
+            opts.push(format!("force-media-title={}", crate::wetube_commands::media_title(&v.title)));
         }
         mpv.set("vid", if self.audio_only { "no" } else { "auto" });
         self.loading = true;
-        // mpv 0.38 added an index argument; older libmpv (Ubuntu 22.04's 0.34) takes options third
-        let joined = opts.join(",");
-        let res = mpv.command(&["loadfile", &src, "replace", "-1", &joined]).or_else(|_| mpv.command(&["loadfile", &src, "replace", &joined]));
-        if let Err(e) = res {
-            self.error = Some(e.to_string());
-        }
+        // Async command acceptance is not execution. Tag the command so an
+        // old reply cannot set the current video to failed after a switch.
+        let joined=opts.join(",");
+        let legacy=mpv.get_string("mpv-version").is_some_and(|v|crate::wetube_commands::legacy_loadfile(&v));
+        let id=self.commands.issue(crate::wetube_commands::Kind::Load);
+        let res=if legacy{mpv.command_tagged(&["loadfile",&src,"replace",&joined],id)}else{mpv.command_tagged(&["loadfile",&src,"replace","-1",&joined],id)};
+        if let Err(e)=res {self.commands.resolve(id);self.loading=false;self.error=Some(e.to_string());}
         cx.notify();
     }
 
@@ -962,10 +982,12 @@ impl Player {
         let t = if self.duration.is_finite() && self.duration > 0.0 { t.clamp(0.0, (self.duration - 0.1).max(0.0)) } else { t.clamp(0.0, 604800.0) };
         if self.loading || self.video.is_none() { return; }
         if let Some(m) = &self.mpv {
-            if m.command(&["seek", &format!("{t}"), "absolute+exact"]).is_ok() {
-                self.time = t;
-                self.checkpoint_recovery();
-            }
+            let id=self.commands.issue(crate::wetube_commands::Kind::Seek);
+            if m.command_tagged(&["seek",&format!("{t}"),"absolute+exact"],id).is_ok(){
+                self.seeking=true;
+                // Position is updated only by mpv's time-pos event, not when
+                // an async request is merely queued.
+            }else{self.commands.resolve(id);}
         }
     }
 
@@ -1061,7 +1083,8 @@ impl Player {
         if let Some(v) = &self.video {
             crate::api::web::report_stop(&v.id, self.time);
         }
-        self.load_serial += 1;
+        self.load_serial=self.load_serial.wrapping_add(1);
+        self.commands.clear();
         if let Some(m) = &self.mpv {
             let _ = m.command(&["stop"]);
         }

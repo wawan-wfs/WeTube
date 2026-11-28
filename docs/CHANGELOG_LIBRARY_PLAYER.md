@@ -1,0 +1,6 @@
+# Bounded Library and native playback command lifecycle
+
+- Stream local playlist metadata through a bounded collector, fetch item counts and thumbnail only for visible cards in one read transaction; deterministic index and Unicode match. Saved and account collections paginated independently; visible history wraps rather than clips. Subscriptions uses fixed 60-item pages.
+- Track asynchronous libmpv load/seek command replies by request ID. Select loadfile syntax by version. Reject NUL command arguments and sanitize media title. Clear stale transient state on video replacement and failed runtime initialization. Avoid persisting speculative seek targets.
+- Add native keyboard tab stops and focus rings to text controls, labeled player/PiP controls and token-stable queue IDs; restore workspace focus after modal Escape. Keep existing features, Windows gates, branding and license.
+- Verified: 62 portable tests, native all-targets typecheck, 7 SQL probes, FFmpeg, 160 geometry cells, 11 validator tests. No actual Windows visual or online provider acceptance. Full linked Linux baseline compile unfinished; runtime libmpv and yt-dlp missing, Vulkan instance initialization fails. No deployment.

@@ -1305,9 +1305,9 @@ impl WatchPage {
                         Some(Arc::new(move |_, cx: &mut App| plc.update(cx, |p, cx| {if let Some(index)=p.queue.index(token){p.play_queue_index(index,cx)}}))),
                         cx,
                     )))
-                    .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{i}")), None, "↑", cx).on_click(move |_, _, cx| up.update(cx, |p, cx| { if p.queue.move_token(&mut p.queue_pos,token,true) { p.checkpoint_recovery(); } cx.notify(); }))))
-                    .when(i + 1 < len, |d| d.child(pill(SharedString::from(format!("queue-down-{i}")), None, "↓", cx).on_click(move |_, _, cx| down.update(cx, |p, cx| { if p.queue.move_token(&mut p.queue_pos,token,false) { p.checkpoint_recovery(); } cx.notify(); }))))
-                    .when(pos != Some(i), |d| d.child(icon_button(SharedString::from(format!("queue-remove-{i}")), "x", cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { if p.queue.remove_token(&mut p.queue_pos,token) { p.checkpoint_recovery(); } cx.notify(); })))),
+                    .when(i > 0, |d| d.child(pill(SharedString::from(format!("queue-up-{token:032x}")), None, "↑", cx).aria_label(format!("Move item {} up",i+1)).on_click(move |_, _, cx| up.update(cx, |p, cx| { if p.queue.move_token(&mut p.queue_pos,token,true) { p.checkpoint_recovery(); } cx.notify(); }))))
+                    .when(i + 1 < len, |d| d.child(pill(SharedString::from(format!("queue-down-{token:032x}")), None, "↓", cx).aria_label(format!("Move item {} down",i+1)).on_click(move |_, _, cx| down.update(cx, |p, cx| { if p.queue.move_token(&mut p.queue_pos,token,false) { p.checkpoint_recovery(); } cx.notify(); }))))
+                    .when(pos != Some(i), |d| d.child(accessible_icon_button(SharedString::from(format!("queue-remove-{token:032x}")), "x", format!("Remove item {}",i+1),cx).on_click(move |_, _, cx| remove.update(cx, |p, cx| { if p.queue.remove_token(&mut p.queue_pos,token) { p.checkpoint_recovery(); } cx.notify(); })))),
             );
         }
         let plc2 = pl.clone();
@@ -1339,14 +1339,14 @@ impl WatchPage {
                         .child(
                             div()
                                 .flex()
-                                .child(icon_button("q-shuffle", "shuffle", cx).on_click(move |_, _, cx| {
+                                .child(accessible_icon_button("q-shuffle", "shuffle", "Shuffle queue",cx).on_click(move |_, _, cx| {
                                     plc2.update(cx, |p, cx| {
                                         p.queue.shuffle(&mut p.queue_pos);
                                         p.checkpoint_recovery();
                                         cx.notify();
                                     })
                                 }))
-                                .child(icon_button("q-clear", "x", cx).on_click(move |_, _, cx| {
+                                .child(accessible_icon_button("q-clear", "x", "Clear live queue",cx).on_click(move |_, _, cx| {
                                     plc3.update(cx, |p, cx| {
                                         p.queue.clear();
                                         p.queue_pos = None;

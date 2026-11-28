@@ -238,12 +238,20 @@ pub fn icon_button(id: impl Into<ElementId>, name: &str, cx: &App) -> Stateful<D
         .child(icon(name).text_color(p.text))
 }
 
+/// Labeled icon-only control with native keyboard and accessibility metadata.
+pub fn accessible_icon_button(id:impl Into<ElementId>,name:&str,label:impl Into<SharedString>,cx:&App)->Stateful<Div>{
+    let p=pal(cx);icon_button(id,name,cx).tab_index(0).aria_label(label).border_2().border_color(hsla(0.,0.,0.,0.)).focus_visible(move|s|s.border_color(p.accent))
+}
+
 /// Pill button with optional icon.
 pub fn pill(id: impl Into<ElementId>, icon_name: Option<&str>, label: impl Into<SharedString>, cx: &App) -> Stateful<Div> {
     let p = pal(cx);
     let label: SharedString = label.into();
     div()
         .id(id.into())
+        .tab_index(0)
+        .aria_label(label.clone())
+        .border_2().border_color(hsla(0.,0.,0.,0.)).focus_visible(move |s|s.border_color(p.accent))
         .flex()
         .flex_none()
         .items_center()
@@ -263,8 +271,12 @@ pub fn pill(id: impl Into<ElementId>, icon_name: Option<&str>, label: impl Into<
 
 pub fn chip(id: impl Into<ElementId>, label: impl Into<SharedString>, active: bool, cx: &App) -> Stateful<Div> {
     let p = pal(cx);
+    let label:SharedString=label.into();
     div()
         .id(id.into())
+        .tab_index(0)
+        .aria_label(label.clone())
+        .border_2().border_color(hsla(0.,0.,0.,0.)).focus_visible(move |s|s.border_color(p.accent))
         .flex_none()
         .px_3()
         .py_1p5()
@@ -274,7 +286,7 @@ pub fn chip(id: impl Into<ElementId>, label: impl Into<SharedString>, active: bo
         .cursor_pointer()
         .when(active, |d| d.bg(p.chip_active_bg).text_color(p.chip_active_fg))
         .when(!active, move |d| d.bg(p.chip).text_color(p.text).hover(move |s| s.bg(p.hover)))
-        .child(label.into())
+        .child(label)
 }
 
 pub fn spinner(cx: &App) -> impl IntoElement {
